@@ -1,0 +1,13 @@
+# Normalize line endings
+* text=auto
+
+# Binary files
+*.png binary
+*.jpg binary
+*.gif binary
+
+# Scripts
+*.html text
+*.md text
+*.json text
+*.js text
