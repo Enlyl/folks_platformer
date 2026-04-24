@@ -4,10 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Punk Platformer</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0812'/><rect x='7' y='2' width='2' height='1' fill='%2339ff14'/><rect x='6' y='3' width='4' height='1' fill='%2339ff14'/><rect x='5' y='4' width='6' height='2' fill='%2339ff14'/><rect x='5' y='6' width='6' height='6' fill='%23f1b897'/><rect x='6' y='8' width='1' height='1' fill='%230a0812'/><rect x='9' y='8' width='1' height='1' fill='%230a0812'/><rect x='7' y='10' width='2' height='1' fill='%23a02020'/><rect x='4' y='12' width='8' height='3' fill='%23ff4fd8'/></svg>">
 <style>
-  :root {
-    --display-width: 1920px;
-  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
     width: 100%;
@@ -46,8 +44,7 @@
     box-shadow:
       0 0 0 4px rgba(255, 204, 0, 0.12),
       0 24px 80px rgba(57, 255, 20, 0.12);
-    image-rendering: pixelated;
-    image-rendering: crisp-edges;
+    image-rendering: auto;
     background: #070609;
   }
   #bottomPanel {
@@ -158,28 +155,73 @@
   </div>
 </div>
 <script>
-const GAME_W = 1920;
-const GAME_H = 1080;
+// Internal render resolution (world is authored against this size).
+// Display size is controlled separately via applyResolution() -> CSS scaling.
+const GAME_W = 800;
+const GAME_H = 480;
 let camX = 0;
-let LEVEL_W = 2500;
+let LEVEL_W = 4500;
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 if (!ctx) {
   alert('Canvas not supported');
+  throw new Error('Canvas 2D context not supported');
 }
 canvas.width = GAME_W;
 canvas.height = GAME_H;
 
-function applyResolution(w, h) {
-  // Scale canvas to fit window
-  const scale = Math.min(window.innerWidth / w, window.innerHeight / h);
-  canvas.style.width = `${w * scale}px`;
-  canvas.style.height = `${h * scale}px`;
+function applyResolution(targetW, targetH) {
+  // Canvas renders a virtual world with GAME_W x GAME_H aspect (5:3). To avoid internal
+  // letterbox bars we pick the largest 5:3 box that fits inside the requested target
+  // resolution, then scale the result down to fit the actual browser window.
+  const aspect = GAME_W / GAME_H;
+  let w = Math.min(targetW, targetH * aspect);
+  let h = w / aspect;
+  const bottomPanel = document.getElementById('bottomPanel');
+  const reservedH = (bottomPanel ? bottomPanel.offsetHeight : 0) + 72;
+  const availW = Math.max(320, window.innerWidth - 48);
+  const availH = Math.max(240, window.innerHeight - reservedH);
+  const scale = Math.min(availW / w, availH / h, 1);
+  canvas.style.width = `${Math.floor(w * scale)}px`;
+  canvas.style.height = `${Math.floor(h * scale)}px`;
+  syncCanvasBacking();
 }
 
-// Initialize - start at 1920x1080
-window.addEventListener('load', () => setTimeout(() => applyResolution(1920, 1080), 50));
-window.addEventListener('resize', () => setTimeout(() => applyResolution(1920, 1080), 50));
+// Match the canvas internal backing store to the displayed pixel size for crisp rendering.
+// Uses a UNIFORM scale so text/sprites are never stretched when the display aspect ratio
+// (e.g. 16:9) differs from the internal virtual resolution aspect ratio (5:3). Any leftover
+// space is left as letterbox (canvas CSS background shows through).
+let canvasViewport = { scale: 1, offsetX: 0, offsetY: 0 };
+function syncCanvasBacking() {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const backW = Math.max(1, Math.round(rect.width * dpr));
+  const backH = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== backW || canvas.height !== backH) {
+    canvas.width = backW;
+    canvas.height = backH;
+  }
+  const s = Math.min(backW / GAME_W, backH / GAME_H);
+  const ox = (backW - GAME_W * s) / 2;
+  const oy = (backH - GAME_H * s) / 2;
+  canvasViewport.scale = s;
+  canvasViewport.offsetX = ox;
+  canvasViewport.offsetY = oy;
+  // Paint letterbox bars black so the seam between canvas bg and game bg is invisible.
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, backW, backH);
+  ctx.setTransform(s, 0, 0, s, ox, oy);
+}
+
+function applyCurrentResolution() {
+  const res = (typeof selectedResolution === 'function') ? selectedResolution() : { width: 1920, height: 1080 };
+  applyResolution(res.width, res.height);
+}
+
+// Initialize - use the selected resolution; re-apply on window resize
+window.addEventListener('load', () => setTimeout(applyCurrentResolution, 50));
+window.addEventListener('resize', () => setTimeout(applyCurrentResolution, 50));
 
 const mouseState = {
   x: 0,
@@ -187,20 +229,47 @@ const mouseState = {
   inside: false,
 };
 let interactiveRegions = [];
+// UI is authored in a 800x480 virtual viewport; we scale it to fit the real canvas.
+const UI_W = 800;
+const UI_H = 480;
+let uiTransform = null;
+function pushUITransform() {
+  const s = Math.min(GAME_W / UI_W, GAME_H / UI_H);
+  const ox = (GAME_W - UI_W * s) / 2;
+  const oy = (GAME_H - UI_H * s) / 2;
+  uiTransform = { s, ox, oy };
+  ctx.save();
+  ctx.translate(ox, oy);
+  ctx.scale(s, s);
+}
+function popUITransform() {
+  ctx.restore();
+  uiTransform = null;
+}
 function clearInteractiveRegions() {
   interactiveRegions = [];
   canvas.style.cursor = 'default';
 }
 function addInteractiveRegion(x, y, w, h, onClick, onHover) {
+  if (uiTransform) {
+    x = x * uiTransform.s + uiTransform.ox;
+    y = y * uiTransform.s + uiTransform.oy;
+    w *= uiTransform.s;
+    h *= uiTransform.s;
+  }
   interactiveRegions.push({ x, y, w, h, onClick, onHover });
 }
 function canvasMousePosition(event) {
   const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
+  const dpr = window.devicePixelRatio || 1;
+  // Physical pixel coordinates within the backing store.
+  const physX = (event.clientX - rect.left) * dpr;
+  const physY = (event.clientY - rect.top) * dpr;
+  // Reverse the uniform scale + letterbox offset applied by syncCanvasBacking().
+  const s = canvasViewport.scale || 1;
   return {
-    x: (event.clientX - rect.left) * scaleX,
-    y: (event.clientY - rect.top) * scaleY,
+    x: (physX - canvasViewport.offsetX) / s,
+    y: (physY - canvasViewport.offsetY) / s,
   };
 }
 canvas.addEventListener('mousemove', event => {
@@ -300,42 +369,84 @@ function shopSound() { beep(400, 0.15); beep(600, 0.15); beep(800, 0.15); }
 function buySound() { beep(600, 0.1); beep(900, 0.15); beep(1200, 0.2); }
 function hurtSound() { beep(140, 0.15, 'square'); beep(100, 0.18, 'square'); }
 function playerDeathSound() { beep(160, 0.12, 'sawtooth'); beep(90, 0.3, 'sawtooth'); beep(60, 0.4, 'square'); }
-function gameOverSound() { playerDeathSound(); }
 function guitarKillSound() { beep(520, 0.08, 'triangle'); beep(640, 0.1, 'triangle'); beep(720, 0.08, 'triangle'); }
 
 // ---- Background Music ----
 let bgOsc1, bgOsc2, bgOsc3, bgGain, melodyInterval;
-const melody = [329.63, 493.88, 554.37, 493.88, 440.00, 369.99, 329.63]; // Hedwig's Theme simplified
 let melodyIndex = 0;
+
+// Per-level music themes.
+const MUSIC_THEMES = {
+  1: {
+    // Original punk theme - driving sawtooth
+    melody: [329.63, 493.88, 554.37, 493.88, 440.00, 369.99, 329.63],
+    harmony: [220, 330],
+    tempo: 400,
+    lead: 'sawtooth',
+    pad: 'sawtooth',
+  },
+  2: {
+    // Gloomy folk - slow minor-key triangle waves, low warm harmony
+    melody: [220.00, 261.63, 246.94, 220.00, 196.00, 174.61, 196.00, 220.00,
+             146.83, 174.61, 196.00, 220.00, 196.00, 174.61, 164.81, 146.83],
+    harmony: [110, 164.81],
+    tempo: 620,
+    lead: 'triangle',
+    pad: 'sine',
+  },
+  3: {
+    // Dark synth - fast bass arpeggio, detuned sawtooth pad
+    melody: [65.41, 98.00, 130.81, 98.00, 65.41, 77.78, 116.54, 77.78,
+             61.74, 92.50, 123.47, 92.50, 58.27, 87.31, 116.54, 87.31],
+    harmony: [41.20, 65.41],
+    tempo: 190,
+    lead: 'sawtooth',
+    pad: 'sawtooth',
+  },
+  4: {
+    // Punk rock - driving power-chord riff, fast tempo, gritty sawtooth
+    melody: [164.81, 164.81, 196.00, 164.81, 146.83, 164.81, 123.47, 146.83,
+             164.81, 164.81, 196.00, 220.00, 246.94, 220.00, 196.00, 164.81],
+    harmony: [82.41, 123.47],
+    tempo: 180,
+    lead: 'sawtooth',
+    pad: 'square',
+  },
+};
+
 function startBackgroundMusic() {
   if (bgGain) return; // already playing
+  const theme = MUSIC_THEMES[currentLevel] || MUSIC_THEMES[1];
+
   bgGain = audioCtx.createGain();
   bgGain.gain.value = currentVolume();
   bgGain.connect(audioCtx.destination);
 
   bgOsc1 = audioCtx.createOscillator();
-  bgOsc1.type = 'sawtooth';
-  bgOsc1.frequency.value = melody[0];
+  bgOsc1.type = theme.lead;
+  bgOsc1.frequency.value = theme.melody[0];
   bgOsc1.connect(bgGain);
   bgOsc1.start();
 
   bgOsc2 = audioCtx.createOscillator();
-  bgOsc2.type = 'sawtooth';
-  bgOsc2.frequency.value = 220; // constant harmony
+  bgOsc2.type = theme.pad;
+  bgOsc2.frequency.value = theme.harmony[0];
   bgOsc2.connect(bgGain);
   bgOsc2.start();
 
   bgOsc3 = audioCtx.createOscillator();
-  bgOsc3.type = 'sawtooth';
-  bgOsc3.frequency.value = 330; // constant harmony
+  bgOsc3.type = theme.pad;
+  // Detune slightly for the dark-synth theme so the harmony throbs.
+  bgOsc3.frequency.value = theme.harmony[1] * (currentLevel === 3 ? 1.005 : 1);
   bgOsc3.connect(bgGain);
   bgOsc3.start();
 
-  // Play melody
+  melodyIndex = 0;
+  const melody = theme.melody;
   melodyInterval = setInterval(() => {
     bgOsc1.frequency.value = melody[melodyIndex];
     melodyIndex = (melodyIndex + 1) % melody.length;
-  }, 400); // 400ms per note
+  }, theme.tempo);
 }
 function stopBackgroundMusic() {
   if (bgGain) {
@@ -378,6 +489,7 @@ function pollGamepad() {
   keys['gpJump'] = false;
   keys['gpAttack'] = false;
   keys['gpStart'] = false;
+  keys['gpB'] = false;
 
   // Left Stick (for movement/navigation)
   gamepadState.leftStickX = gp.axes[0] || 0;
@@ -416,12 +528,12 @@ function pollGamepad() {
 }
 
 // ---- Game State ----
-let gameState = 'start'; // start, settings, playing, win, receipt, shop, gameover
+let gameState = 'start'; // start, settings, playing, receipt, shop, gameover
 let score = 0;
 let totalBeer = 0; // persistent across runs
 let lives = 3;
 let receiptTimer = 0;
-let receipItemsList = []; // Items shown in receipt
+let receiptItemsList = []; // Items shown in receipt
 const creatorOptions = {
   names: ['Riot', 'Nova', 'Spike', 'Vex', 'Echo', 'Razor', 'Blitz', 'Nina', 'Sid', 'Lux', 'Crash', 'Zero'],
   resolutions: [
@@ -463,18 +575,14 @@ const creatorOptions = {
     { name: 'Olive', value: '#3f4a24' },
   ],
 };
-function makeRandomPresets() {
-  const shuffledNames = [...creatorOptions.names].sort(() => Math.random() - 0.5).slice(0, 5);
-  return shuffledNames.map(name => ({
-    name,
-    hairIndex: Math.floor(Math.random() * creatorOptions.hairColors.length),
-    shirtIndex: Math.floor(Math.random() * creatorOptions.shirtColors.length),
-    patternIndex: Math.floor(Math.random() * creatorOptions.shirtPatterns.length),
-    skinIndex: Math.floor(Math.random() * creatorOptions.skinTones.length),
-    pantsIndex: Math.floor(Math.random() * creatorOptions.pantsColors.length),
-  }));
-}
-const presetPlayers = makeRandomPresets();
+// Fixed roster of 5 presets (stable across reloads)
+const presetPlayers = [
+  { name: 'Riot',  hairIndex: 0, shirtIndex: 1, patternIndex: 4, skinIndex: 0, pantsIndex: 1 },
+  { name: 'Nova',  hairIndex: 2, shirtIndex: 3, patternIndex: 2, skinIndex: 3, pantsIndex: 2 },
+  { name: 'Spike', hairIndex: 1, shirtIndex: 0, patternIndex: 1, skinIndex: 1, pantsIndex: 3 },
+  { name: 'Vex',   hairIndex: 3, shirtIndex: 2, patternIndex: 0, skinIndex: 2, pantsIndex: 0 },
+  { name: 'Echo',  hairIndex: 0, shirtIndex: 2, patternIndex: 3, skinIndex: 0, pantsIndex: 2 },
+];
 const characterProfile = {
   presetIndex: 0,
   resolutionIndex: 0,
@@ -485,23 +593,28 @@ const characterProfile = {
   skinIndex: 0,
   pantsIndex: 0,
 };
-let creatorSelection = 0;
+let creatorSelection = 7;
 let settingsSelection = 0;
+let settingsReturnTo = 'start'; // 'start' (from creator) or 'paused' (from pause menu)
+let pauseSelection = 0;
 const CREATOR_ITEMS = ['Preset', 'Hair', 'Shirt', 'Pattern', 'Skin', 'Pants', 'Settings', 'Play'];
 const SETTINGS_ITEMS = ['Resolution', 'Apply', 'Back'];
+const PAUSE_ITEMS = ['Resume', 'Settings', 'Exit to Menu'];
 
 // ---- Guitars ----
 // Shape types: strat, mustang, jaguar, lespaul, superstart, explorer, vshape
+// Each guitar has a UNIQUE damage value and a progressively harder price - the final
+// guitar (V-Guitar) is intended to be affordable only after ~3-4 winning runs.
 const guitarTypes = [
-  { name: 'Stratocaster', price: 50, damage: 1, color: '#d4a556', shape: 'strat' },
-  { name: 'Telecaster', price: 80, damage: 1, color: '#c9a961', shape: 'mustang' },
-  { name: 'Jaguar', price: 120, damage: 1, color: '#2b8cc4', shape: 'jaguar' },
-  { name: 'Les Paul', price: 200, damage: 2, color: '#cc3a1f', shape: 'lespaul' },
-  { name: 'Superstrat', price: 280, damage: 2, color: '#0066bb', shape: 'superstart' },
-  { name: 'Explorer', price: 350, damage: 2, color: '#f5f5f5', shape: 'explorer' },
-  { name: 'V-Guitar', price: 500, damage: 3, color: '#cc1111', shape: 'vshape' },
-  { name: 'Firebird', price: 450, damage: 2, color: '#ff6f18', shape: 'firebird' },
-  { name: 'Iceman', price: 430, damage: 2, color: '#6fdfff', shape: 'iceman' },
+  { name: 'Stratocaster', price: 150,  damage: 1, color: '#d4a556', shape: 'strat' },
+  { name: 'Telecaster',   price: 320,  damage: 2, color: '#c9a961', shape: 'mustang' },
+  { name: 'Jaguar',       price: 560,  damage: 3, color: '#2b8cc4', shape: 'jaguar' },
+  { name: 'Les Paul',     price: 900,  damage: 4, color: '#cc3a1f', shape: 'lespaul' },
+  { name: 'Superstrat',   price: 1400, damage: 5, color: '#0066bb', shape: 'superstart' },
+  { name: 'Explorer',     price: 2000, damage: 6, color: '#f5f5f5', shape: 'explorer' },
+  { name: 'Firebird',     price: 2800, damage: 7, color: '#ff6f18', shape: 'firebird' },
+  { name: 'Iceman',       price: 3800, damage: 8, color: '#6fdfff', shape: 'iceman' },
+  { name: 'V-Guitar',     price: 5200, damage: 9, color: '#cc1111', shape: 'vshape' },
 ];
 let ownedGuitars = [];
 
@@ -547,33 +660,316 @@ const TILE = 32;
 const platforms = [];
 const beerCans = [];
 const enemies = [];
+const poisonSources = []; // Ceiling drippers (level 4) that periodically spawn drops.
+const poisonDrops = [];   // Falling acid droplets - damage the player on contact.
+let currentLevel = 1;
+const TOTAL_LEVELS = 4;
+const LEVEL_NAMES = {
+  1: 'City Streets',
+  2: 'Village Outskirts',
+  3: 'Junkyard',
+  4: 'Sewers',
+};
+let levelDeathCount = 0; // Tracks deaths on the current non-level-1 level.
+const MAX_DEATHS_PER_LEVEL = 3;
+let lastCompletedLevel = 0; // Level the player just beat - offered as a replay in the shop.
 
 // Build level
-function buildLevel() {
+function buildLevel(level = currentLevel) {
   platforms.length = 0;
   beerCans.length = 0;
   enemies.length = 0;
+  poisonDrops.length = 0;
+  poisonSources.length = 0;
+
+  // Level 4 is noticeably longer than the other levels - a deep sewer crawl.
+  LEVEL_W = level === 4 ? 7200 : 4500;
 
   // Ground
   for (let x = 0; x < LEVEL_W; x += TILE) {
     platforms.push({ x, y: 448, w: TILE, h: TILE, type: 'ground' });
   }
 
-  // Floating platforms
-  const layout = [
-    { x: 200, y: 350, w: 5 },
-    { x: 400, y: 280, w: 4 },
-    { x: 600, y: 350, w: 3 },
-    { x: 750, y: 260, w: 4 },
-    { x: 950, y: 320, w: 5 },
-    { x: 1150, y: 250, w: 4 },
-    { x: 1350, y: 350, w: 3 },
-    { x: 1500, y: 280, w: 4 },
-    { x: 1700, y: 220, w: 3 },
-    { x: 1900, y: 300, w: 4 },
-    { x: 2100, y: 350, w: 3 },
-    { x: 2250, y: 280, w: 2 },
-  ];
+  let layout, enemyPositions, goldenPositions;
+
+  if (level === 4) {
+    // -- Level 4: Underground sewers with rats and speeding toxic carts (dashers) --
+    layout = [
+      { x: 160, y: 380, w: 3 },
+      { x: 320, y: 330, w: 3 },
+      { x: 500, y: 370, w: 4 },
+      { x: 700, y: 300, w: 3 },
+      { x: 880, y: 360, w: 4 },
+      { x: 1080, y: 290, w: 3 },
+      { x: 1260, y: 350, w: 4 },
+      { x: 1460, y: 280, w: 3 },
+      { x: 1640, y: 340, w: 4 },
+      { x: 1840, y: 300, w: 3 },
+      { x: 2020, y: 360, w: 4 },
+      { x: 2220, y: 290, w: 3 },
+      { x: 2400, y: 350, w: 4 },
+      { x: 2600, y: 280, w: 3 },
+      { x: 2780, y: 340, w: 4 },
+      { x: 2980, y: 300, w: 3 },
+      { x: 3160, y: 360, w: 4 },
+      { x: 3360, y: 290, w: 3 },
+      { x: 3540, y: 350, w: 4 },
+      { x: 3740, y: 280, w: 3 },
+      { x: 3920, y: 340, w: 4 },
+      { x: 4120, y: 300, w: 3 },
+      { x: 4300, y: 360, w: 4 },
+      // Extended second half of the sewer.
+      { x: 4520, y: 290, w: 3 },
+      { x: 4720, y: 350, w: 4 },
+      { x: 4920, y: 280, w: 3 },
+      { x: 5100, y: 340, w: 4 },
+      { x: 5300, y: 290, w: 3 },
+      { x: 5480, y: 360, w: 4 },
+      { x: 5680, y: 300, w: 3 },
+      { x: 5860, y: 340, w: 4 },
+      { x: 6060, y: 280, w: 3 },
+      { x: 6240, y: 350, w: 4 },
+      { x: 6440, y: 300, w: 3 },
+      { x: 6620, y: 360, w: 4 },
+      { x: 6820, y: 320, w: 3 },
+      { x: 7000, y: 380, w: 3 },
+    ];
+
+    // Rats patrol the ground; bats replaced by small fliers; dashers zoom across.
+    enemyPositions = [
+      // Ground rats (HP 1, damage normally, but small & fast)
+      { x: 380,  y: 416, min: 300,  max: 500,  type: 'rat' },
+      { x: 760,  y: 416, min: 660,  max: 860,  type: 'rat' },
+      { x: 1160, y: 416, min: 1060, max: 1260, type: 'rat' },
+      { x: 1560, y: 416, min: 1460, max: 1660, type: 'rat' },
+      { x: 1960, y: 416, min: 1860, max: 2060, type: 'rat' },
+      { x: 2360, y: 416, min: 2260, max: 2460, type: 'rat' },
+      { x: 2760, y: 416, min: 2660, max: 2860, type: 'rat' },
+      { x: 3160, y: 416, min: 3060, max: 3260, type: 'rat' },
+      { x: 3560, y: 416, min: 3460, max: 3660, type: 'rat' },
+      { x: 3960, y: 416, min: 3860, max: 4060, type: 'rat' },
+      // Extended-half rats
+      { x: 4400, y: 416, min: 4320, max: 4520, type: 'rat' },
+      { x: 4820, y: 416, min: 4720, max: 4920, type: 'rat' },
+      { x: 5240, y: 416, min: 5140, max: 5340, type: 'rat' },
+      { x: 5640, y: 416, min: 5540, max: 5740, type: 'rat' },
+      { x: 6040, y: 416, min: 5940, max: 6140, type: 'rat' },
+      { x: 6440, y: 416, min: 6340, max: 6540, type: 'rat' },
+      { x: 6860, y: 416, min: 6760, max: 6960, type: 'rat' },
+      // Giant sewer rats - sprint from one edge of the screen to the opposite edge.
+      // They ALWAYS enter/exit off-screen so the player has time to react and jump over.
+      { x: 0, y: 416, type: 'dasher', speed: 4.5, initialDelay: 120 },
+      { x: 0, y: 416, type: 'dasher', speed: 5,   initialDelay: 300 },
+      { x: 0, y: 416, type: 'dasher', speed: 5.5, initialDelay: 480 },
+      { x: 0, y: 416, type: 'dasher', speed: 5,   initialDelay: 720 },
+      // Sewer bats patrolling the tunnel ceiling (bob up-down like the village ones).
+      { x: 820,  y: 260, min: 780,  max: 870,  type: 'flyer', vy: 1.5, minY: 170, maxY: 340 },
+      { x: 1520, y: 260, min: 1480, max: 1570, type: 'flyer', vy: 1.7, minY: 180, maxY: 350 },
+      { x: 2220, y: 260, min: 2180, max: 2270, type: 'flyer', vy: 1.4, minY: 170, maxY: 330 },
+      { x: 2920, y: 260, min: 2880, max: 2970, type: 'flyer', vy: 1.8, minY: 180, maxY: 360 },
+      { x: 3620, y: 260, min: 3580, max: 3670, type: 'flyer', vy: 1.5, minY: 170, maxY: 340 },
+      { x: 4200, y: 260, min: 4160, max: 4260, type: 'flyer', vy: 1.6, minY: 180, maxY: 350 },
+      // Extended-half bats
+      { x: 4820, y: 260, min: 4780, max: 4870, type: 'flyer', vy: 1.6, minY: 170, maxY: 350 },
+      { x: 5420, y: 260, min: 5380, max: 5470, type: 'flyer', vy: 1.8, minY: 180, maxY: 360 },
+      { x: 6020, y: 260, min: 5980, max: 6070, type: 'flyer', vy: 1.5, minY: 170, maxY: 340 },
+      { x: 6620, y: 260, min: 6580, max: 6670, type: 'flyer', vy: 1.7, minY: 180, maxY: 350 },
+    ];
+
+    goldenPositions = [
+      { x: 1100, y: 250 },
+      { x: 2500, y: 240 },
+      { x: 3800, y: 240 },
+      { x: 5200, y: 240 },
+      { x: 6400, y: 240 },
+    ];
+
+    // Poisonous acid drippers on the ceiling - periodically release falling drops.
+    const dripperSpots = [
+      { x: 450,  y: 110 },
+      { x: 900,  y: 130 },
+      { x: 1350, y: 115 },
+      { x: 1800, y: 125 },
+      { x: 2250, y: 110 },
+      { x: 2700, y: 130 },
+      { x: 3150, y: 115 },
+      { x: 3600, y: 125 },
+      { x: 4050, y: 110 },
+      { x: 4500, y: 130 },
+      { x: 4950, y: 115 },
+      { x: 5400, y: 125 },
+      { x: 5850, y: 110 },
+      { x: 6300, y: 130 },
+      { x: 6750, y: 115 },
+    ];
+    dripperSpots.forEach((d, i) => {
+      poisonSources.push({
+        x: d.x,
+        y: d.y,
+        interval: 110 + (i * 37) % 90,       // base cadence per dripper (frames)
+        timer: 60 + (i * 53) % 180,          // staggered initial delay
+        wobble: Math.random() * Math.PI * 2, // tiny animation offset
+      });
+    });
+  } else if (level === 3) {
+    // -- Level 3: Junkyard with brute trash-golems --
+    layout = [
+      { x: 160, y: 380, w: 3 },
+      { x: 340, y: 320, w: 4 },
+      { x: 560, y: 360, w: 3 },
+      { x: 740, y: 280, w: 4 },
+      { x: 960, y: 340, w: 3 },
+      { x: 1140, y: 260, w: 4 },
+      { x: 1360, y: 320, w: 3 },
+      { x: 1540, y: 240, w: 4 },
+      { x: 1760, y: 300, w: 3 },
+      { x: 1940, y: 360, w: 4 },
+      { x: 2160, y: 280, w: 3 },
+      { x: 2340, y: 340, w: 4 },
+      { x: 2540, y: 220, w: 3 },
+      { x: 2720, y: 300, w: 4 },
+      { x: 2920, y: 360, w: 3 },
+      { x: 3100, y: 280, w: 4 },
+      { x: 3320, y: 220, w: 3 },
+      { x: 3500, y: 320, w: 4 },
+      { x: 3720, y: 260, w: 3 },
+      { x: 3900, y: 340, w: 4 },
+      { x: 4100, y: 280, w: 3 },
+      { x: 4260, y: 360, w: 3 },
+    ];
+
+    enemyPositions = [
+      // Standard robots
+      { x: 400,  y: 416, min: 300,  max: 520  },
+      { x: 880,  y: 416, min: 780,  max: 980  },
+      { x: 1420, y: 416, min: 1320, max: 1540 },
+      { x: 2060, y: 416, min: 1960, max: 2180 },
+      { x: 2840, y: 416, min: 2740, max: 2960 },
+      { x: 3620, y: 416, min: 3520, max: 3740 },
+      // Bats returning from village sewers
+      { x: 1240, y: 240, min: 1200, max: 1300, type: 'flyer', vy: 1.5, minY: 180, maxY: 340 },
+      { x: 2420, y: 240, min: 2380, max: 2480, type: 'flyer', vy: 1.7, minY: 180, maxY: 340 },
+      { x: 3200, y: 240, min: 3160, max: 3260, type: 'flyer', vy: 1.4, minY: 180, maxY: 340 },
+      // Brutes - heavy junk golems, HP 4 (2 hits from a DMG-2 guitar)
+      { x: 660,  y: 414, min: 600,  max: 760,  type: 'brute' },
+      { x: 1700, y: 414, min: 1620, max: 1800, type: 'brute' },
+      { x: 2640, y: 414, min: 2560, max: 2740, type: 'brute' },
+      { x: 3420, y: 414, min: 3340, max: 3520, type: 'brute' },
+      { x: 4160, y: 414, min: 4080, max: 4260, type: 'brute' },
+    ];
+
+    goldenPositions = [
+      { x: 1100, y: 260 },
+      { x: 2600, y: 220 },
+      { x: 4000, y: 260 },
+    ];
+  } else if (level === 2) {
+    // -- Level 2: Village rooftops with bats --
+    layout = [
+      { x: 180, y: 360, w: 4 },
+      { x: 380, y: 300, w: 3 },
+      { x: 540, y: 360, w: 4 },
+      { x: 760, y: 280, w: 3 },
+      { x: 940, y: 340, w: 5 },
+      { x: 1160, y: 260, w: 3 },
+      { x: 1340, y: 320, w: 4 },
+      { x: 1540, y: 240, w: 3 },
+      { x: 1720, y: 310, w: 4 },
+      { x: 1920, y: 360, w: 3 },
+      { x: 2100, y: 270, w: 4 },
+      { x: 2300, y: 340, w: 3 },
+      { x: 2480, y: 230, w: 3 },
+      { x: 2660, y: 320, w: 4 },
+      { x: 2880, y: 260, w: 3 },
+      { x: 3060, y: 360, w: 4 },
+      { x: 3260, y: 280, w: 3 },
+      { x: 3450, y: 340, w: 4 },
+      { x: 3660, y: 220, w: 3 },
+      { x: 3840, y: 320, w: 4 },
+      { x: 4050, y: 260, w: 3 },
+      { x: 4220, y: 340, w: 4 },
+    ];
+
+    // Standard ground patrollers + bats that fly up/down
+    enemyPositions = [
+      { x: 420,  y: 416, min: 320,  max: 540  },
+      { x: 780,  y: 416, min: 680,  max: 900  },
+      { x: 1240, y: 416, min: 1140, max: 1340 },
+      { x: 1820, y: 416, min: 1720, max: 1920 },
+      { x: 2420, y: 416, min: 2320, max: 2520 },
+      { x: 3000, y: 416, min: 2900, max: 3100 },
+      { x: 3560, y: 416, min: 3460, max: 3660 },
+      { x: 4120, y: 416, min: 4020, max: 4220 },
+      // Bats: slow horizontal drift + vertical bobbing
+      { x: 650,  y: 260, min: 620,  max: 690,  type: 'flyer', vy: 1.6, minY: 180, maxY: 360 },
+      { x: 1020, y: 260, min: 990,  max: 1060, type: 'flyer', vy: 1.4, minY: 200, maxY: 380 },
+      { x: 1450, y: 260, min: 1420, max: 1490, type: 'flyer', vy: 1.8, minY: 160, maxY: 340 },
+      { x: 2000, y: 260, min: 1960, max: 2040, type: 'flyer', vy: 1.5, minY: 200, maxY: 380 },
+      { x: 2620, y: 260, min: 2580, max: 2670, type: 'flyer', vy: 1.7, minY: 170, maxY: 350 },
+      { x: 3180, y: 260, min: 3140, max: 3220, type: 'flyer', vy: 1.4, minY: 180, maxY: 360 },
+      { x: 3740, y: 260, min: 3700, max: 3780, type: 'flyer', vy: 1.9, minY: 160, maxY: 380 },
+      { x: 4300, y: 260, min: 4260, max: 4340, type: 'flyer', vy: 1.6, minY: 180, maxY: 370 },
+    ];
+
+    goldenPositions = [
+      { x: 1050, y: 280 },
+      { x: 2500, y: 210 },
+      { x: 3950, y: 250 },
+    ];
+  } else {
+    // -- Level 1: Original city --
+    layout = [
+      { x: 200, y: 350, w: 5 },
+      { x: 400, y: 280, w: 4 },
+      { x: 600, y: 350, w: 3 },
+      { x: 750, y: 260, w: 4 },
+      { x: 950, y: 320, w: 5 },
+      { x: 1150, y: 250, w: 4 },
+      { x: 1350, y: 350, w: 3 },
+      { x: 1500, y: 280, w: 4 },
+      { x: 1700, y: 220, w: 3 },
+      { x: 1900, y: 300, w: 4 },
+      { x: 2100, y: 350, w: 3 },
+      { x: 2250, y: 280, w: 2 },
+      { x: 2450, y: 340, w: 4 },
+      { x: 2650, y: 260, w: 3 },
+      { x: 2820, y: 320, w: 4 },
+      { x: 3050, y: 240, w: 3 },
+      { x: 3220, y: 330, w: 5 },
+      { x: 3450, y: 270, w: 4 },
+      { x: 3650, y: 200, w: 3 },
+      { x: 3820, y: 310, w: 4 },
+      { x: 4020, y: 250, w: 3 },
+      { x: 4200, y: 340, w: 4 },
+    ];
+
+    enemyPositions = [
+      { x: 350, y: 416, min: 300, max: 450 },
+      { x: 700, y: 416, min: 600, max: 800 },
+      { x: 800, y: 228, min: 750, max: 880 },
+      { x: 1000, y: 416, min: 950, max: 1100 },
+      { x: 1200, y: 218, min: 1150, max: 1280 },
+      { x: 1550, y: 248, min: 1500, max: 1620 },
+      { x: 1750, y: 188, min: 1700, max: 1820 },
+      { x: 1950, y: 416, min: 1900, max: 2050 },
+      { x: 2250, y: 416, min: 2180, max: 2380 },
+      { x: 2550, y: 308, min: 2470, max: 2620 },
+      { x: 2850, y: 416, min: 2780, max: 2960 },
+      { x: 3100, y: 208, min: 3060, max: 3180 },
+      { x: 3320, y: 298, min: 3240, max: 3420 },
+      { x: 3600, y: 416, min: 3500, max: 3720 },
+      { x: 3700, y: 168, min: 3660, max: 3780 },
+      { x: 3980, y: 416, min: 3880, max: 4080 },
+      { x: 4240, y: 308, min: 4200, max: 4340 },
+    ];
+
+    goldenPositions = [
+      { x: 900,  y: 300 },
+      { x: 2400, y: 230 },
+      { x: 3900, y: 260 },
+    ];
+  }
+
   layout.forEach(p => {
     for (let i = 0; i < p.w; i++) {
       platforms.push({ x: p.x + i * TILE, y: p.y, w: TILE, h: TILE, type: 'brick' });
@@ -581,31 +977,57 @@ function buildLevel() {
   });
 
   // Beer cans - random positions throughout the level
-  for (let x = 180; x < 2400; x += 70 + Math.random() * 60) {
+  for (let x = 180; x < LEVEL_W - 120; x += 70 + Math.random() * 60) {
     beerCans.push({
       x: x,
       y: 200 + Math.random() * 220,
-      collected: false
+      collected: false,
+      golden: false
     });
   }
 
-  // Enemies
-  const enemyPositions = [
-    { x: 350, y: 416, min: 300, max: 450 },
-    { x: 700, y: 416, min: 600, max: 800 },
-    { x: 800, y: 228, min: 750, max: 880 },
-    { x: 1000, y: 416, min: 950, max: 1100 },
-    { x: 1200, y: 218, min: 1150, max: 1280 },
-    { x: 1550, y: 248, min: 1500, max: 1620 },
-    { x: 1750, y: 188, min: 1700, max: 1820 },
-    { x: 1950, y: 416, min: 1900, max: 2050 },
-  ];
+  // Golden cans - each restores one heart (or +50 beer if at full health).
+  goldenPositions.forEach(g => {
+    beerCans.push({ x: g.x, y: g.y, collected: false, golden: true });
+  });
+
   enemyPositions.forEach(e => {
-    enemies.push({ x: e.x, y: e.y, vx: 1.5, min: e.min, max: e.max, alive: true });
+    const type = e.type || 'robot';
+    let vx = 1.5;
+    if (type === 'flyer') vx = 0.6;
+    else if (type === 'brute') vx = 0.9;
+    else if (type === 'rat') vx = 2.2;
+    else if (type === 'dasher') vx = 0; // set on spawn
+
+    const enemy = {
+      x: e.x, y: e.y,
+      vx,
+      min: e.min, max: e.max,
+      alive: true,
+      type,
+      vy: e.vy || 0,
+      minY: e.minY || 0,
+      maxY: e.maxY || 0,
+      hp: type === 'brute' ? 7 : 1,
+      maxHp: type === 'brute' ? 7 : 1,
+      hitCooldown: 0,
+      hitFlash: 0,
+    };
+
+    if (type === 'dasher') {
+      // Screen-relative sprinters: spawn just off the visible screen edge and sprint
+      // across to the opposite off-screen edge. Never appear or vanish on-screen.
+      enemy.speed = e.speed || 5;
+      enemy.active = false;
+      enemy.respawn = e.initialDelay || 180;
+      enemy.invulnerable = true; // Guitar attacks do not work on them.
+    }
+
+    enemies.push(enemy);
   });
 
   // Goal flag
-  player.goalX = 2400;
+  player.goalX = level === 4 ? 7100 : 4400;
 }
 
 // ---- Player ----
@@ -651,10 +1073,25 @@ function selectedSkinTone() {
 function selectedPantsColor() {
   return creatorOptions.pantsColors[characterProfile.pantsIndex].value;
 }
+const RESOLUTION_STORAGE_KEY = 'punkPlatformer.resolutionIndex';
+
 function applyDisplayResolution() {
+  characterProfile.resolutionIndex = characterProfile.pendingResolutionIndex;
+  try { localStorage.setItem(RESOLUTION_STORAGE_KEY, String(characterProfile.resolutionIndex)); } catch (_) {}
   const res = selectedResolution();
   applyResolution(res.width, res.height);
-  characterProfile.resolutionIndex = characterProfile.pendingResolutionIndex;
+}
+
+function loadPersistedResolution() {
+  try {
+    const raw = localStorage.getItem(RESOLUTION_STORAGE_KEY);
+    if (raw === null) return;
+    const idx = parseInt(raw, 10);
+    if (Number.isInteger(idx) && idx >= 0 && idx < creatorOptions.resolutions.length) {
+      characterProfile.resolutionIndex = idx;
+      characterProfile.pendingResolutionIndex = idx;
+    }
+  } catch (_) {}
 }
 function applyPreset(index) {
   const preset = presetPlayers[index];
@@ -666,6 +1103,7 @@ function applyPreset(index) {
   characterProfile.pantsIndex = preset.pantsIndex;
 }
 applyPreset(0);
+loadPersistedResolution();
 characterProfile.pendingResolutionIndex = characterProfile.resolutionIndex;
 applyDisplayResolution();
 
@@ -702,15 +1140,18 @@ function updateStartScreen() {
         characterProfile.pantsIndex = (characterProfile.pantsIndex + creatorOptions.pantsColors.length + dir) % creatorOptions.pantsColors.length;
         break;
       case 6:
-        if (confirm) gameState = 'settings';
+        if (movePrev || moveNext) creatorSelection = 7;
+        else if (confirm) { gameState = 'settings'; settingsReturnTo = 'start'; settingsSelection = 0; }
         break;
       case 7:
-        if (confirm || play) startGame();
+        if (movePrev) creatorSelection = 6;
+        else if (confirm || play) startGame();
         break;
     }
   }
 
-  if (play && creatorSelection === 7) startGame();
+  // SPACE / START should always launch the game, regardless of current selection
+  if (play) startGame();
 
   keys['ArrowLeft_held'] = keys['ArrowLeft'];
   keys['ArrowRight_held'] = keys['ArrowRight'];
@@ -748,13 +1189,12 @@ function updateSettingsScreen() {
   }
 
   if (settingsSelection === 1 && confirm) {
-    characterProfile.resolutionIndex = characterProfile.pendingResolutionIndex;
     applyDisplayResolution();
   }
 
   if ((settingsSelection === 2 && confirm) || back) {
     characterProfile.pendingResolutionIndex = characterProfile.resolutionIndex;
-    gameState = 'start';
+    gameState = settingsReturnTo === 'paused' ? 'paused' : 'start';
   }
 
   keys['ArrowLeft_held'] = keys['ArrowLeft'];
@@ -775,6 +1215,54 @@ function updateSettingsScreen() {
   keys['gpDown_held'] = keys['gpDown'];
   keys['gpJump_held'] = keys['gpJump'];
   keys['gpStart_held'] = keys['gpStart'];
+}
+
+function updatePauseScreen() {
+  const moveUp = (keys['ArrowUp'] && !keys['ArrowUp_held']) || (keys['KeyW'] && !keys['KeyW_held']) || (keys['gpUp'] && !keys['gpUp_held']);
+  const moveDown = (keys['ArrowDown'] && !keys['ArrowDown_held']) || (keys['KeyS'] && !keys['KeyS_held']) || (keys['gpDown'] && !keys['gpDown_held']);
+  const confirm = (keys['Enter'] && !keys['Enter_held']) || (keys['KeyE'] && !keys['KeyE_held']) || (keys['Space'] && !keys['Space_held']) || (keys['gpJump'] && !keys['gpJump_held']);
+  // Esc / Start / gpB close the pause menu (resume).
+  const resumeShortcut = (keys['Escape'] && !keys['Escape_held']) || (keys['gpStart'] && !keys['gpStart_held']) || (keys['gpB'] && !keys['gpB_held']);
+
+  if (moveUp) pauseSelection = (pauseSelection - 1 + PAUSE_ITEMS.length) % PAUSE_ITEMS.length;
+  if (moveDown) pauseSelection = (pauseSelection + 1) % PAUSE_ITEMS.length;
+
+  if (resumeShortcut) {
+    gameState = 'playing';
+  } else if (confirm) {
+    if (pauseSelection === 0) {
+      gameState = 'playing';
+    } else if (pauseSelection === 1) {
+      gameState = 'settings';
+      settingsReturnTo = 'paused';
+      settingsSelection = 0;
+      characterProfile.pendingResolutionIndex = characterProfile.resolutionIndex;
+    } else if (pauseSelection === 2) {
+      // Exit to main menu: abandon the current run.
+      if (bgGain) stopBackgroundMusic();
+      lives = 3;
+      score = 0;
+      levelDeathCount = 0;
+      lastCompletedLevel = 0;
+      currentLevel = 1;
+      gameState = 'start';
+      creatorSelection = 7;
+    }
+  }
+
+  keys['ArrowUp_held'] = keys['ArrowUp'];
+  keys['ArrowDown_held'] = keys['ArrowDown'];
+  keys['KeyW_held'] = keys['KeyW'];
+  keys['KeyS_held'] = keys['KeyS'];
+  keys['Enter_held'] = keys['Enter'];
+  keys['KeyE_held'] = keys['KeyE'];
+  keys['Space_held'] = keys['Space'];
+  keys['Escape_held'] = keys['Escape'];
+  keys['gpUp_held'] = keys['gpUp'];
+  keys['gpDown_held'] = keys['gpDown'];
+  keys['gpJump_held'] = keys['gpJump'];
+  keys['gpStart_held'] = keys['gpStart'];
+  keys['gpB_held'] = keys['gpB'];
 }
 
 function resetPlayer() {
@@ -817,7 +1305,23 @@ function update() {
     updateSettingsScreen();
     return;
   }
+  if (gameState === 'paused') {
+    updatePauseScreen();
+    return;
+  }
   if (gameState !== 'playing') return;
+
+  // Pause trigger: Escape key or gamepad Start button opens the pause menu.
+  if ((keys['Escape'] && !keys['Escape_held']) || (keys['gpStart'] && !keys['gpStart_held'])) {
+    gameState = 'paused';
+    pauseSelection = 0;
+    keys['Escape_held'] = true;
+    keys['gpStart_held'] = true;
+    if (bgGain) stopBackgroundMusic();
+    return;
+  }
+  if (!keys['Escape']) keys['Escape_held'] = false;
+  if (!keys['gpStart']) keys['gpStart_held'] = false;
 
   // Invincibility timer
   if (player.invincible) {
@@ -882,7 +1386,11 @@ function update() {
   // Fall death
   if (player.y > 520) {
     lives--;
-    if (lives <= 0) { gameState = 'gameover'; playerDeathSound(); }
+    if (lives <= 0) {
+      gameState = 'gameover';
+      levelDeathCount++;
+      playerDeathSound();
+    }
     else resetPlayer();
   }
 
@@ -890,56 +1398,179 @@ function update() {
   for (const c of beerCans) {
     if (!c.collected && rects(player, { x: c.x - 12, y: c.y - 12, w: 24, h: 24 })) {
       c.collected = true;
-      score += 10;
-      coinSound();
+      if (c.golden) {
+        if (lives < 3) {
+          // Missing hearts -> restore one. No score bonus.
+          lives++;
+        } else {
+          // Full health -> reward with 50 beer points.
+          score += 50;
+        }
+        winSound();
+      } else {
+        score += 10;
+        coinSound();
+      }
     }
   }
 
   // Enemy update & collision
   for (const e of enemies) {
     if (!e.alive) continue;
-    e.x += e.vx;
-    if (e.x <= e.min || e.x >= e.max) e.vx *= -1;
 
-    // Guitar attack
-    if (player.attacking && player.attackTimer > 3) {
+    // Dashers: spawn just off the visible screen edge and sprint to the opposite
+    // off-screen edge. They never appear or vanish within the visible area.
+    if (e.type === 'dasher') {
+      if (!e.active) {
+        e.respawn--;
+        if (e.respawn <= 0) {
+          const dir = Math.random() < 0.5 ? 1 : -1;
+          e.vx = dir * e.speed;
+          // Spawn just beyond the current visible screen edge.
+          e.x = dir > 0 ? (camX - 80) : (camX + GAME_W + 80);
+          e.active = true;
+        }
+      } else {
+        e.x += e.vx;
+        // Deactivate only once fully past the OPPOSITE visible-screen edge.
+        const screenX = e.x - camX;
+        if ((e.vx > 0 && screenX > GAME_W + 80) || (e.vx < 0 && screenX < -80)) {
+          e.active = false;
+          e.respawn = 180 + Math.floor(Math.random() * 180);
+        }
+      }
+    } else {
+      e.x += e.vx;
+      if (e.x <= e.min || e.x >= e.max) e.vx *= -1;
+      if (e.type === 'flyer') {
+        e.y += e.vy;
+        if (e.y <= e.minY || e.y >= e.maxY) e.vy *= -1;
+      }
+    }
+
+    // Decay per-enemy timers.
+    if (e.hitCooldown > 0) e.hitCooldown--;
+    if (e.hitFlash > 0) e.hitFlash--;
+
+    const isBrute = e.type === 'brute';
+    const isDasher = e.type === 'dasher';
+    const isRat = e.type === 'rat';
+
+    // Dashers that are off-screen do not collide or get drawn.
+    if (isDasher && !e.active) continue;
+
+    // Enemy hitboxes.
+    let hbW = 28, hbH = 28;
+    if (isBrute) { hbW = 40; hbH = 40; }
+    else if (isRat) { hbW = 26; hbH = 18; }
+    else if (isDasher) { hbW = 56; hbH = 32; }
+    const enemyRect = { x: e.x - hbW / 2, y: e.y - hbH, w: hbW, h: hbH };
+
+    // Guitar attack - AABB overlap between a tight swing hitbox and the enemy hitbox.
+    // Dashers are armored: guitar attacks pass right through them.
+    if (player.attacking && player.attackTimer > 2 && e.hitCooldown === 0 && !e.invulnerable) {
       const attackProgress = (15 - player.attackTimer) / 15;
-      const gx = player.x + (player.facing > 0 ? 78 : -54);
-      const gy = player.y - 22 + attackProgress * 42;
-      if (e.x > gx - 20 && e.x < gx + 24 && e.y > gy - 10 && e.y < gy + 56) {
-        e.alive = false;
-        score += 50;
-        guitarKillSound();
+      const gx = player.x + (player.facing > 0 ? 58 : -32);
+      const gy = player.y - 18 + attackProgress * 38;
+      const guitarRect = { x: gx - 18, y: gy - 8, w: 36, h: 54 };
+      if (rects(guitarRect, enemyRect)) {
+        const dmg = guitarTypes[player.guitarType].damage;
+        e.hp -= dmg;
+        e.hitCooldown = 18;
+        e.hitFlash = 10;
+        if (e.hp <= 0) {
+          e.alive = false;
+          score += isBrute ? 120 : 50;
+          guitarKillSound();
+        } else {
+          hurtSound();
+        }
         continue;
       }
     }
 
-    if (rects(player, { x: e.x - 14, y: e.y - 28, w: 28, h: 28 })) {
+    if (rects(player, enemyRect)) {
       const prevBottom = player.y + player.h - player.vy;
-      if (prevBottom < e.y && player.vy > 0) {
+      // Brutes are spiky, dashers are armored carts -> cannot be stomped.
+      const canStomp = !isBrute && !isDasher;
+      if (canStomp && prevBottom < e.y && player.vy > 0) {
         e.alive = false;
         player.vy = -8;
         score += 50;
         killSound();
       } else if (!player.invincible) {
         lives--;
-        if (lives <= 0) { gameState = 'gameover'; gameOverSound(); }
+        if (lives <= 0) {
+          gameState = 'gameover';
+          levelDeathCount++;
+          playerDeathSound();
+        }
         else {
           player.invincible = true;
           player.invincibleTimer = 120;
+          // Bounce player away from brute so they're not stuck in damage loop.
+          if (isBrute) {
+            player.vy = -6;
+            player.vx = player.x < e.x ? -4 : 4;
+          }
         }
         hurtSound();
       }
     }
   }
 
-  // Win
+  // Poison drippers (level 4): ceiling sources periodically release acid drops
+  // that fall until they hit the ground or the player. Only update drippers whose
+  // source is reasonably near the screen to keep things cheap.
+  for (const src of poisonSources) {
+    const dx = src.x - camX;
+    if (dx < -80 || dx > GAME_W + 80) continue;
+    src.timer--;
+    if (src.timer <= 0) {
+      poisonDrops.push({ x: src.x, y: src.y + 10, vy: 0 });
+      src.timer = src.interval + Math.floor(Math.random() * 40);
+    }
+  }
+  for (let i = poisonDrops.length - 1; i >= 0; i--) {
+    const d = poisonDrops[i];
+    d.vy += 0.42;
+    if (d.vy > 11) d.vy = 11;
+    d.y += d.vy;
+
+    // Splat on ground.
+    if (d.y > 442) {
+      poisonDrops.splice(i, 1);
+      continue;
+    }
+    // Hit the player.
+    const dropRect = { x: d.x - 3, y: d.y - 5, w: 6, h: 10 };
+    if (!player.invincible && rects(player, dropRect)) {
+      lives--;
+      if (lives <= 0) {
+        gameState = 'gameover';
+        levelDeathCount++;
+        playerDeathSound();
+      } else {
+        player.invincible = true;
+        player.invincibleTimer = 120;
+      }
+      hurtSound();
+      poisonDrops.splice(i, 1);
+    }
+  }
+
+  // Win - advance to next level after the shop.
   if (player.x + player.w > player.goalX) {
     totalBeer += score;
     winSound();
+    lastCompletedLevel = currentLevel;
+    currentLevel = (currentLevel % TOTAL_LEVELS) + 1;
+    levelDeathCount = 0; // Fresh attempts on the new level.
     gameState = 'shop';
     shopCol = 0;
     shopRow = 0;
+    shopFocus = 'grid';
+    shopFooterSel = 1;
   }
 
   // Animation
@@ -964,7 +1595,16 @@ function handleGameStateTransitions() {
   if (keys['Space_transition_held'] || keys['Enter_transition_held']) {
     if (gameState === 'gameover') {
       audioCtx.resume();
-      startGame();
+      // On non-first levels the player gets up to MAX_DEATHS_PER_LEVEL tries before
+      // being kicked back to level 1. Level 1 always restarts from scratch.
+      if (currentLevel > 1 && levelDeathCount < MAX_DEATHS_PER_LEVEL) {
+        // Respawn on the same level; keep the death counter.
+        startGame();
+      } else {
+        currentLevel = 1;
+        levelDeathCount = 0;
+        startGame();
+      }
     }
     keys['Space_transition_held'] = false;
     keys['Enter_transition_held'] = false;
@@ -1790,7 +2430,7 @@ function drawPixelPunk(x, y, facing, frame, showGuitar) {
       break;
     case 'huy':
       ctx.fillStyle = '#f0f0f0';
-      ctx.font = 'bold 4px monospace';
+      ctx.font = 'bold 4px Consolas, "Courier New", monospace';
       ctx.fillText('X*Y', 10, 25 + bodyBob);
       break;
     case 'punks-not-dead':
@@ -1875,6 +2515,44 @@ function drawCoin(c) {
   const sx = c.x - camX;
   if (sx < -20 || sx > 820) return;
 
+  if (c.golden) {
+    // Golden can with pulsing glow - restores one heart.
+    const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.006);
+    ctx.save();
+    ctx.shadowColor = '#ffd35a';
+    ctx.shadowBlur = 8 + pulse * 6;
+
+    ctx.fillStyle = '#ffd35a';
+    ctx.fillRect(sx - 5, c.y - 16, 10, 14);
+
+    ctx.fillStyle = '#c78a12';
+    ctx.fillRect(sx - 5, c.y - 16, 10, 2);
+    ctx.fillRect(sx - 5, c.y - 4, 10, 2);
+    ctx.fillRect(sx - 4, c.y - 11, 8, 4);
+
+    ctx.fillStyle = '#fff0a8';
+    ctx.fillRect(sx - 5, c.y - 18, 10, 2);
+
+    ctx.fillStyle = '#c78a12';
+    ctx.beginPath();
+    ctx.ellipse(sx, c.y - 16, 5, 1.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.fillRect(sx - 3.5, c.y - 13, 2, 8);
+
+    // Heart icon in center
+    ctx.fillStyle = '#ff3b5c';
+    ctx.fillRect(sx - 3, c.y - 10, 2, 2);
+    ctx.fillRect(sx + 1, c.y - 10, 2, 2);
+    ctx.fillRect(sx - 3, c.y - 9, 6, 2);
+    ctx.fillRect(sx - 2, c.y - 7, 4, 2);
+    ctx.fillRect(sx - 1, c.y - 5, 2, 1);
+
+    ctx.restore();
+    return;
+  }
+
   // Beer can - white body with red bands and center label
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(sx - 5, c.y - 16, 10, 14);
@@ -1903,8 +2581,26 @@ function drawCoin(c) {
 
 function drawEnemy(e) {
   if (!e.alive) return;
+  if (e.type === 'dasher' && !e.active) return;
   const sx = e.x - camX;
-  if (sx < -30 || sx > 830) return;
+  if (sx < -80 || sx > 880) return;
+
+  if (e.type === 'flyer') {
+    drawBat(sx, e.y);
+    return;
+  }
+  if (e.type === 'brute') {
+    drawBrute(sx, e.y, e);
+    return;
+  }
+  if (e.type === 'rat') {
+    drawRat(sx, e.y, e);
+    return;
+  }
+  if (e.type === 'dasher') {
+    drawDasher(sx, e.y, e);
+    return;
+  }
 
   ctx.fillStyle = '#ff3333';
   ctx.fillRect(sx - 12, e.y - 28, 24, 24);
@@ -1926,6 +2622,339 @@ function drawEnemy(e) {
   ctx.fillRect(sx - 3, e.y - 40, 6, 6);
 }
 
+function drawBrute(sx, y, e) {
+  const flash = e.hitFlash > 0;
+  ctx.save();
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(sx, y + 2, 22, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Main rusted body - outer shell
+  ctx.fillStyle = flash ? '#ffe8a0' : '#4a2a18';
+  ctx.fillRect(sx - 20, y - 40, 40, 40);
+  // Inner body
+  ctx.fillStyle = flash ? '#ffd060' : '#6b3a22';
+  ctx.fillRect(sx - 18, y - 38, 36, 36);
+  // Rust patches
+  ctx.fillStyle = flash ? '#ffaa44' : '#8a4520';
+  ctx.fillRect(sx - 14, y - 30, 6, 6);
+  ctx.fillRect(sx + 6,  y - 22, 8, 8);
+  ctx.fillRect(sx - 10, y - 12, 10, 4);
+  // Bolts
+  ctx.fillStyle = '#2a1810';
+  ctx.fillRect(sx - 18, y - 38, 3, 3);
+  ctx.fillRect(sx + 15, y - 38, 3, 3);
+  ctx.fillRect(sx - 18, y - 5,  3, 3);
+  ctx.fillRect(sx + 15, y - 5,  3, 3);
+  // Top spikes (stomp deterrent)
+  ctx.fillStyle = '#2a1a12';
+  for (let i = -2; i <= 2; i++) {
+    const sxi = sx + i * 7;
+    ctx.beginPath();
+    ctx.moveTo(sxi - 3, y - 40);
+    ctx.lineTo(sxi,     y - 48);
+    ctx.lineTo(sxi + 3, y - 40);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Glowing eyes
+  ctx.fillStyle = flash ? '#ffffff' : '#7cff50';
+  ctx.fillRect(sx - 10, y - 30, 5, 5);
+  ctx.fillRect(sx + 5,  y - 30, 5, 5);
+  // Eye glow
+  ctx.fillStyle = 'rgba(124, 255, 80, 0.35)';
+  ctx.fillRect(sx - 12, y - 32, 9, 9);
+  ctx.fillRect(sx + 3,  y - 32, 9, 9);
+  // Mouth grill
+  ctx.fillStyle = '#1a0e08';
+  ctx.fillRect(sx - 10, y - 16, 20, 6);
+  ctx.fillStyle = '#4a2e1a';
+  for (let gx = sx - 9; gx < sx + 10; gx += 3) ctx.fillRect(gx, y - 16, 1, 6);
+  // HP bar above head
+  const hpRatio = Math.max(0, e.hp / e.maxHp);
+  ctx.fillStyle = '#220808';
+  ctx.fillRect(sx - 18, y - 56, 36, 4);
+  ctx.fillStyle = hpRatio > 0.5 ? '#7cff50' : (hpRatio > 0.25 ? '#ffcc00' : '#ff3333');
+  ctx.fillRect(sx - 18, y - 56, 36 * hpRatio, 4);
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(sx - 18.5, y - 56.5, 37, 5);
+  ctx.restore();
+}
+
+function drawBat(sx, y) {
+  const flap = Math.sin(Date.now() * 0.018) * 4;
+  ctx.save();
+  // Wings
+  ctx.fillStyle = '#2a0a35';
+  ctx.beginPath();
+  ctx.moveTo(sx - 6, y - 18);
+  ctx.lineTo(sx - 22, y - 22 + flap);
+  ctx.lineTo(sx - 18, y - 12 + flap);
+  ctx.lineTo(sx - 6, y - 10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(sx + 6, y - 18);
+  ctx.lineTo(sx + 22, y - 22 + flap);
+  ctx.lineTo(sx + 18, y - 12 + flap);
+  ctx.lineTo(sx + 6, y - 10);
+  ctx.closePath();
+  ctx.fill();
+  // Body
+  ctx.fillStyle = '#4a1a55';
+  ctx.fillRect(sx - 7, y - 22, 14, 14);
+  // Head
+  ctx.fillStyle = '#3a1045';
+  ctx.fillRect(sx - 5, y - 28, 10, 8);
+  // Ears
+  ctx.beginPath();
+  ctx.moveTo(sx - 5, y - 28);
+  ctx.lineTo(sx - 7, y - 33);
+  ctx.lineTo(sx - 2, y - 28);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(sx + 5, y - 28);
+  ctx.lineTo(sx + 7, y - 33);
+  ctx.lineTo(sx + 2, y - 28);
+  ctx.closePath();
+  ctx.fill();
+  // Glowing eyes
+  ctx.fillStyle = '#ff3b3b';
+  ctx.fillRect(sx - 3, y - 25, 2, 2);
+  ctx.fillRect(sx + 1, y - 25, 2, 2);
+  // Fang
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(sx - 1, y - 22, 1, 2);
+  ctx.fillRect(sx + 1, y - 22, 1, 2);
+  ctx.restore();
+}
+
+function drawRat(sx, y, e) {
+  ctx.save();
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(sx, y, 14, 2.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Direction based on velocity
+  const dir = e.vx < 0 ? -1 : 1;
+  // Body
+  ctx.fillStyle = '#4a3a30';
+  ctx.fillRect(sx - 12, y - 14, 24, 12);
+  // Belly
+  ctx.fillStyle = '#6a5a48';
+  ctx.fillRect(sx - 10, y - 10, 20, 6);
+  // Head
+  ctx.fillStyle = '#3a2a22';
+  ctx.fillRect(sx + dir * 8, y - 16, 8, 8);
+  // Ears
+  ctx.fillStyle = '#2a1a14';
+  ctx.fillRect(sx + dir * 8, y - 18, 3, 3);
+  ctx.fillRect(sx + dir * 13, y - 18, 3, 3);
+  // Inner ear
+  ctx.fillStyle = '#8a5a6a';
+  ctx.fillRect(sx + dir * 9, y - 17, 1, 1);
+  ctx.fillRect(sx + dir * 14, y - 17, 1, 1);
+  // Eye (red, glowing)
+  ctx.fillStyle = '#ff3030';
+  ctx.fillRect(sx + dir * 12, y - 13, 2, 2);
+  ctx.fillStyle = 'rgba(255,60,60,0.4)';
+  ctx.fillRect(sx + dir * 11, y - 14, 4, 4);
+  // Snout + teeth
+  ctx.fillStyle = '#c8b0a0';
+  ctx.fillRect(sx + dir * 16, y - 10, 2, 3);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(sx + dir * 16, y - 8, 1, 2);
+  // Legs
+  ctx.fillStyle = '#2a1a12';
+  ctx.fillRect(sx - 10, y - 4, 3, 4);
+  ctx.fillRect(sx + 7,  y - 4, 3, 4);
+  // Tail (wavy)
+  ctx.strokeStyle = '#8a6a50';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const tailStart = sx - dir * 12;
+  ctx.moveTo(tailStart, y - 10);
+  ctx.quadraticCurveTo(tailStart - dir * 10, y - 18, tailStart - dir * 18, y - 8);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawDasher(sx, y, e) {
+  // Giant sewer rat sprinting across the screen. Armored: immune to guitar hits.
+  const dir = e.vx >= 0 ? 1 : -1;
+  ctx.save();
+
+  // Motion-blur streaks behind the rat
+  for (let i = 1; i <= 5; i++) {
+    ctx.globalAlpha = 0.22 - i * 0.035;
+    ctx.fillStyle = '#3a2a22';
+    ctx.fillRect(sx - dir * (30 + i * 10), y - 24, 26, 18);
+  }
+  ctx.globalAlpha = 1;
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath();
+  ctx.ellipse(sx, y + 2, 34, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Running leg animation (two-frame gallop)
+  const legCycle = Math.floor(Date.now() * 0.03) % 2;
+  const legFrontA = legCycle === 0 ? 6 : 2;
+  const legFrontB = legCycle === 0 ? 2 : 6;
+
+  // Back legs
+  ctx.fillStyle = '#1e140e';
+  ctx.fillRect(sx - dir * 22, y - 4, 4, legFrontA);
+  ctx.fillRect(sx - dir * 16, y - 4, 4, legFrontB);
+  // Front legs
+  ctx.fillRect(sx + dir * 16, y - 4, 4, legFrontB);
+  ctx.fillRect(sx + dir * 22, y - 4, 4, legFrontA);
+
+  // Body - main dark fur
+  ctx.fillStyle = '#3a2a20';
+  ctx.fillRect(sx - 28, y - 22, 56, 20);
+  // Belly highlight
+  ctx.fillStyle = '#5a4a3a';
+  ctx.fillRect(sx - 24, y - 12, 48, 8);
+  // Fur shading along top
+  ctx.fillStyle = '#1e140e';
+  ctx.fillRect(sx - 26, y - 22, 52, 4);
+  // Hunched back hump
+  ctx.fillStyle = '#2a1e14';
+  ctx.fillRect(sx - 8, y - 26, 18, 6);
+
+  // Fur tufts
+  ctx.fillStyle = '#4a382a';
+  for (let i = 0; i < 6; i++) {
+    ctx.fillRect(sx - 22 + i * 9, y - 18 - (i % 2) * 2, 2, 2);
+  }
+
+  // Head (at the front, extended forward)
+  const hx = sx + dir * 28;
+  ctx.fillStyle = '#2e2018';
+  ctx.fillRect(hx, y - 22, dir * 18, 16);
+  // Normalize head rect for further drawing
+  const headX = dir > 0 ? hx : hx + dir * 18;
+  const headW = 18;
+  // Snout
+  ctx.fillStyle = '#1a1208';
+  ctx.fillRect(headX + (dir > 0 ? headW : -6), y - 14, 6, 6);
+  // Nose
+  ctx.fillStyle = '#ff6080';
+  ctx.fillRect(headX + (dir > 0 ? headW + 4 : -6), y - 12, 2, 2);
+  // Ears (big pointy)
+  ctx.fillStyle = '#2a1a12';
+  ctx.beginPath();
+  ctx.moveTo(headX + 4, y - 22);
+  ctx.lineTo(headX + 8, y - 32);
+  ctx.lineTo(headX + 12, y - 22);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(headX + headW - 12, y - 22);
+  ctx.lineTo(headX + headW - 8, y - 32);
+  ctx.lineTo(headX + headW - 4, y - 22);
+  ctx.closePath();
+  ctx.fill();
+  // Inner ear
+  ctx.fillStyle = '#8a3a50';
+  ctx.fillRect(headX + 7,         y - 26, 2, 2);
+  ctx.fillRect(headX + headW - 9, y - 26, 2, 2);
+
+  // Glowing red eye
+  ctx.fillStyle = 'rgba(255, 40, 40, 0.35)';
+  ctx.fillRect(headX + (dir > 0 ? headW - 7 : 2), y - 19, 6, 5);
+  ctx.fillStyle = '#ff2020';
+  ctx.fillRect(headX + (dir > 0 ? headW - 6 : 3), y - 18, 4, 3);
+  ctx.fillStyle = '#ffff80';
+  ctx.fillRect(headX + (dir > 0 ? headW - 5 : 4), y - 18, 1, 1);
+
+  // Fangs (white)
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(headX + (dir > 0 ? headW + 1 : -2), y - 9, 1, 3);
+  ctx.fillRect(headX + (dir > 0 ? headW + 3 : -4), y - 9, 1, 3);
+
+  // Long whippy tail (behind)
+  const tailWave = Math.sin(Date.now() * 0.02) * 6;
+  ctx.strokeStyle = '#8a6a50';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  const tx0 = sx - dir * 28;
+  ctx.moveTo(tx0, y - 14);
+  ctx.quadraticCurveTo(tx0 - dir * 16, y - 22 + tailWave, tx0 - dir * 34, y - 10 - tailWave);
+  ctx.stroke();
+  // Tail segments
+  ctx.strokeStyle = '#6a4e38';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(tx0 - dir * 6,  y - 18 + tailWave * 0.4);
+  ctx.lineTo(tx0 - dir * 20, y - 20 + tailWave * 0.8);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawPoisonHazards() {
+  if (poisonSources.length === 0 && poisonDrops.length === 0) return;
+  const now = Date.now() * 0.004;
+
+  // Ceiling drippers - rusty pipe nozzle with a bulging acid droplet on the tip.
+  for (const src of poisonSources) {
+    const sx = src.x - camX;
+    if (sx < -30 || sx > GAME_W + 30) continue;
+    // Stalactite/nozzle
+    ctx.fillStyle = '#2a2418';
+    ctx.fillRect(sx - 5, src.y - 12, 10, 10);
+    ctx.fillStyle = '#3a3020';
+    ctx.fillRect(sx - 4, src.y - 11, 8, 4);
+    // Rust ring
+    ctx.fillStyle = '#6a3a20';
+    ctx.fillRect(sx - 5, src.y - 3, 10, 2);
+    // Swelling droplet at the tip (pulses with timer approach)
+    const wobble = 1 + Math.sin(now + src.wobble) * 0.5;
+    const rad = 2.2 + Math.max(0, 1.8 - src.timer / 40) + wobble * 0.3;
+    ctx.fillStyle = '#5cff80';
+    ctx.beginPath();
+    ctx.arc(sx, src.y + 2, rad, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(140, 255, 120, 0.4)';
+    ctx.beginPath();
+    ctx.arc(sx, src.y + 2, rad + 1.4, 0, Math.PI * 2);
+    ctx.fill();
+    // Highlight
+    ctx.fillStyle = '#d6ffd0';
+    ctx.fillRect(sx - 1, src.y + 1, 1, 1);
+  }
+
+  // Falling acid droplets - tear-drop shape with trailing glow.
+  for (const d of poisonDrops) {
+    const sx = d.x - camX;
+    if (sx < -20 || sx > GAME_W + 20) continue;
+    // Glow trail
+    ctx.fillStyle = 'rgba(92, 255, 128, 0.28)';
+    ctx.beginPath();
+    ctx.ellipse(sx, d.y - 8, 3, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Teardrop body
+    ctx.fillStyle = '#5cff80';
+    ctx.beginPath();
+    ctx.moveTo(sx, d.y - 7);
+    ctx.quadraticCurveTo(sx - 4, d.y - 2, sx - 3, d.y + 2);
+    ctx.quadraticCurveTo(sx, d.y + 6, sx + 3, d.y + 2);
+    ctx.quadraticCurveTo(sx + 4, d.y - 2, sx, d.y - 7);
+    ctx.closePath();
+    ctx.fill();
+    // Inner highlight
+    ctx.fillStyle = '#d6ffd0';
+    ctx.fillRect(sx - 1, d.y - 3, 1, 2);
+  }
+}
+
 function drawFlag() {
   const sx = player.goalX - camX;
   ctx.fillStyle = '#666';
@@ -1937,6 +2966,18 @@ function drawFlag() {
 }
 
 function drawBackground() {
+  if (currentLevel === 4) {
+    drawSewerBackground();
+    return;
+  }
+  if (currentLevel === 3) {
+    drawJunkyardBackground();
+    return;
+  }
+  if (currentLevel === 2) {
+    drawVillageBackground();
+    return;
+  }
   // Dark night sky gradient
   const grad = ctx.createLinearGradient(0, 0, 0, GAME_H);
   grad.addColorStop(0, '#0a0812');
@@ -1990,6 +3031,392 @@ function drawBackground() {
     ctx.fillRect(brightWindow1X - 1, brightWindow1Y - 1, 8, 12);
     if (i % 2 === 0) ctx.fillRect(brightWindow2X - 1, brightWindow2Y - 1, 8, 12);
     ctx.globalAlpha = 1;
+  }
+}
+
+function drawJunkyardBackground() {
+  // Smoggy polluted sky
+  const grad = ctx.createLinearGradient(0, 0, 0, GAME_H);
+  grad.addColorStop(0, '#302a1e');
+  grad.addColorStop(0.4, '#3e3020');
+  grad.addColorStop(1, '#1a140e');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  // Hazy sun through smog
+  ctx.fillStyle = 'rgba(220, 170, 80, 0.35)';
+  ctx.beginPath();
+  ctx.arc(580, 110, 50, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(220, 170, 80, 0.15)';
+  ctx.beginPath();
+  ctx.arc(580, 110, 80, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Drifting smog clouds
+  ctx.fillStyle = 'rgba(70, 60, 50, 0.4)';
+  for (let i = 0; i < 10; i++) {
+    const cx = (i * 180 - camX * 0.1) % 1000 - 120;
+    const cy = 40 + (i * 31) % 60;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 70, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Far crane silhouettes
+  ctx.fillStyle = '#1a1612';
+  for (let i = 0; i < 4; i++) {
+    const cx = (i * 320 - camX * 0.2) % 1100 - 200;
+    // Mast
+    ctx.fillRect(cx, GAME_H - 260, 4, 180);
+    // Arm
+    ctx.fillRect(cx - 60, GAME_H - 260, 120, 4);
+    // Hook chain
+    ctx.fillRect(cx + 40, GAME_H - 256, 1, 30);
+    ctx.fillRect(cx + 36, GAME_H - 226, 8, 8);
+    // Counterweight
+    ctx.fillRect(cx - 18, GAME_H - 256, 12, 12);
+  }
+
+  // Mid trash hills
+  const hillColors = ['#2a2218', '#342820', '#1f1812'];
+  for (let i = 0; i < 16; i++) {
+    const hx = (i * 190 - camX * 0.35) % 1000 - 120;
+    const hh = 70 + (i * 23) % 40;
+    ctx.fillStyle = hillColors[i % hillColors.length];
+    ctx.beginPath();
+    ctx.moveTo(hx, GAME_H - 46);
+    ctx.lineTo(hx + 60, GAME_H - 46 - hh);
+    ctx.lineTo(hx + 180, GAME_H - 46);
+    ctx.closePath();
+    ctx.fill();
+    // Junk bits sticking out
+    ctx.fillStyle = '#555042';
+    ctx.fillRect(hx + 40, GAME_H - 56 - hh * 0.6, 6, 10);
+    ctx.fillStyle = '#6a4a2a';
+    ctx.fillRect(hx + 90, GAME_H - 64 - hh * 0.4, 8, 14);
+    ctx.fillStyle = '#3a6a3a';
+    ctx.fillRect(hx + 130, GAME_H - 58 - hh * 0.7, 5, 12);
+  }
+
+  // Rusted shipping containers scattered behind gameplay
+  const containerColors = ['#6a2a1a', '#5a3a1a', '#3a4a2a', '#6a6a2a'];
+  for (let i = 0; i < 10; i++) {
+    const bx = (i * 260 - camX * 0.55) % 1100 - 150;
+    const bw = 110 + (i * 11) % 40;
+    const bh = 60 + (i * 17) % 20;
+    const by = GAME_H - bh - 46;
+    ctx.fillStyle = containerColors[i % containerColors.length];
+    ctx.fillRect(bx, by, bw, bh);
+    // Ribbed panels
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    for (let r = bx + 6; r < bx + bw - 4; r += 10) {
+      ctx.fillRect(r, by + 2, 2, bh - 4);
+    }
+    // Rust streaks
+    ctx.fillStyle = 'rgba(180, 90, 40, 0.35)';
+    ctx.fillRect(bx + 12, by + 10, 3, bh - 14);
+    ctx.fillRect(bx + bw - 22, by + 6, 2, bh - 10);
+    // Graffiti tag
+    ctx.fillStyle = '#39ff14';
+    ctx.font = 'bold 10px Consolas, "Courier New", monospace';
+    ctx.fillText('PUNK', bx + 18, by + bh / 2 + 4);
+  }
+
+  // Burning barrels with smoke
+  for (let i = 0; i < 6; i++) {
+    const bx = (i * 340 - camX * 0.75) % 900 - 80;
+    const by = GAME_H - 66;
+    // Barrel body
+    ctx.fillStyle = '#4a2818';
+    ctx.fillRect(bx, by, 20, 28);
+    ctx.fillStyle = '#2a1408';
+    ctx.fillRect(bx, by, 20, 3);
+    ctx.fillRect(bx, by + 25, 20, 3);
+    // Flames
+    const flicker = Math.sin(Date.now() * 0.02 + i) * 2;
+    ctx.fillStyle = '#ff9a22';
+    ctx.beginPath();
+    ctx.moveTo(bx + 2,  by);
+    ctx.lineTo(bx + 10, by - 14 - flicker);
+    ctx.lineTo(bx + 18, by);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#ffd060';
+    ctx.beginPath();
+    ctx.moveTo(bx + 5,  by);
+    ctx.lineTo(bx + 10, by - 8 - flicker);
+    ctx.lineTo(bx + 15, by);
+    ctx.closePath();
+    ctx.fill();
+    // Smoke
+    ctx.fillStyle = 'rgba(80,70,60,0.35)';
+    for (let s = 0; s < 3; s++) {
+      ctx.beginPath();
+      ctx.arc(bx + 10, by - 24 - s * 12 - flicker, 5 + s * 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Foreground tire piles
+  ctx.fillStyle = '#0e0a08';
+  for (let i = 0; i < 8; i++) {
+    const tx = (i * 230 - camX * 0.95) % 900 - 80;
+    const ty = GAME_H - 52;
+    for (let layer = 0; layer < 3; layer++) {
+      for (let t = 0; t < 3 - layer; t++) {
+        const cx = tx + t * 14 + layer * 7;
+        const cy = ty - layer * 10;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#1a1412';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#0e0a08';
+      }
+    }
+  }
+}
+
+function drawVillageBackground() {
+  // Dusk / sunset sky
+  const grad = ctx.createLinearGradient(0, 0, 0, GAME_H);
+  grad.addColorStop(0, '#2c1230');
+  grad.addColorStop(0.45, '#5a2840');
+  grad.addColorStop(1, '#1a1018');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  // Moon
+  ctx.fillStyle = '#f5efd4';
+  ctx.beginPath();
+  ctx.arc(640, 80, 26, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(245, 239, 212, 0.18)';
+  ctx.beginPath();
+  ctx.arc(640, 80, 40, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Scattered stars
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  for (let i = 0; i < 30; i++) {
+    const sx = (i * 197 + camX * 0.04) % GAME_W;
+    const sy = (i * 73) % 180;
+    ctx.fillRect(sx, sy, 1, 1);
+  }
+
+  // Distant hills (far parallax)
+  ctx.fillStyle = '#231830';
+  for (let i = 0; i < 14; i++) {
+    const hx = (i * 220 - camX * 0.15) % 1100 - 150;
+    const hh = 60 + (i * 29) % 50;
+    ctx.beginPath();
+    ctx.moveTo(hx, GAME_H - 140);
+    ctx.quadraticCurveTo(hx + 80, GAME_H - 140 - hh, hx + 180, GAME_H - 140);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Village cottages (mid parallax, behind gameplay)
+  const roofColors = ['#1b1018', '#261420', '#1f1019'];
+  const wallColors = ['#5a3628', '#4a2c20', '#6a4028'];
+  for (let i = 0; i < 18; i++) {
+    const bx = (i * 150 - camX * 0.35) % 1000 - 100;
+    const bw = 72 + (i * 13) % 24;
+    const bh = 58 + (i * 19) % 28;
+    const by = GAME_H - bh - 46;
+
+    // Wall
+    ctx.fillStyle = wallColors[i % wallColors.length];
+    ctx.fillRect(bx, by, bw, bh);
+    // Wall planks (horizontal lines)
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    for (let py = by + 10; py < by + bh - 2; py += 8) {
+      ctx.fillRect(bx, py, bw, 1);
+    }
+    // Roof
+    ctx.fillStyle = roofColors[i % roofColors.length];
+    ctx.beginPath();
+    ctx.moveTo(bx - 5, by);
+    ctx.lineTo(bx + bw / 2, by - 26);
+    ctx.lineTo(bx + bw + 5, by);
+    ctx.closePath();
+    ctx.fill();
+    // Chimney
+    ctx.fillStyle = '#2a1a18';
+    ctx.fillRect(bx + bw - 18, by - 20, 8, 14);
+    // Smoke puffs
+    ctx.fillStyle = 'rgba(200,200,220,0.18)';
+    const smokePhase = (Date.now() * 0.001 + i) % 3;
+    for (let s = 0; s < 3; s++) {
+      const sOff = (smokePhase + s) % 3;
+      ctx.beginPath();
+      ctx.arc(bx + bw - 14, by - 28 - sOff * 10, 4 + sOff * 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Warm windows
+    ctx.fillStyle = '#ffbb5a';
+    ctx.globalAlpha = 0.75;
+    ctx.fillRect(bx + 10, by + 16, 14, 14);
+    if (bw > 80) ctx.fillRect(bx + bw - 24, by + 16, 14, 14);
+    // Window glow
+    ctx.fillStyle = '#fff1b8';
+    ctx.globalAlpha = 0.28;
+    ctx.fillRect(bx + 8, by + 14, 18, 18);
+    if (bw > 80) ctx.fillRect(bx + bw - 26, by + 14, 18, 18);
+    ctx.globalAlpha = 1;
+    // Door
+    ctx.fillStyle = '#1d1014';
+    ctx.fillRect(bx + bw / 2 - 6, by + bh - 22, 12, 22);
+  }
+
+  // Foreground grassy mound silhouettes
+  ctx.fillStyle = '#15181a';
+  for (let i = 0; i < 12; i++) {
+    const mx = (i * 180 - camX * 0.55) % 900 - 100;
+    ctx.beginPath();
+    ctx.ellipse(mx, GAME_H - 44, 120, 30, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawSewerBackground() {
+  // Dank vertical tunnel gradient - black top, sickly green middle, brown sludge bottom.
+  const grad = ctx.createLinearGradient(0, 0, 0, GAME_H);
+  grad.addColorStop(0,    '#060a08');
+  grad.addColorStop(0.35, '#0c1410');
+  grad.addColorStop(0.65, '#122018');
+  grad.addColorStop(1,    '#1a1a10');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  // Tunnel arch silhouette (static, perspective)
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, GAME_H - 50);
+  ctx.quadraticCurveTo(GAME_W / 2, 60, GAME_W, GAME_H - 50);
+  ctx.lineTo(GAME_W, 0);
+  ctx.closePath();
+  ctx.fill();
+
+  // Far brick wall (deep parallax)
+  const brickRows = 12;
+  const brickW = 56;
+  const brickH = 22;
+  for (let row = 0; row < brickRows; row++) {
+    const yy = 60 + row * brickH;
+    const offset = (row % 2) * (brickW / 2);
+    for (let col = -1; col < 18; col++) {
+      const bx = ((col * brickW - camX * 0.15 + offset) % (GAME_W + brickW)) - brickW;
+      const shade = 18 + ((row * 7 + col * 13) % 20);
+      ctx.fillStyle = `rgb(${shade + 8}, ${shade + 4}, ${shade})`;
+      ctx.fillRect(bx, yy, brickW - 2, brickH - 2);
+      // Moss streak
+      if ((row + col) % 5 === 0) {
+        ctx.fillStyle = 'rgba(60, 120, 70, 0.25)';
+        ctx.fillRect(bx, yy, brickW - 2, 3);
+      }
+    }
+  }
+
+  // Mid-ground pipes running along the back wall
+  const pipeColors = ['#3a3028', '#4a3a30', '#2e2620'];
+  for (let i = 0; i < 6; i++) {
+    const py = 90 + i * 48;
+    ctx.fillStyle = pipeColors[i % pipeColors.length];
+    ctx.fillRect(0, py, GAME_W, 10);
+    // Rivets along the pipe
+    ctx.fillStyle = '#1a1410';
+    for (let rx = 20 - (camX * 0.3) % 40; rx < GAME_W; rx += 40) {
+      ctx.fillRect(rx, py + 2, 3, 3);
+      ctx.fillRect(rx, py + 6, 3, 3);
+    }
+    // Valve handle every few pipes
+    if (i % 2 === 0) {
+      const vx = (180 + i * 260 - camX * 0.3) % (GAME_W + 120) - 60;
+      ctx.fillStyle = '#5a4030';
+      ctx.fillRect(vx - 2, py - 8, 4, 8);
+      ctx.fillStyle = '#6a5040';
+      ctx.beginPath();
+      ctx.arc(vx, py - 12, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#2a1e18';
+      for (let a = 0; a < 4; a++) {
+        const ang = (a * Math.PI) / 2;
+        ctx.fillRect(vx + Math.cos(ang) * 5 - 1, py - 12 + Math.sin(ang) * 5 - 1, 2, 2);
+      }
+    }
+  }
+
+  // Dripping water from pipes
+  const drip = Date.now() * 0.001;
+  ctx.fillStyle = 'rgba(120, 200, 220, 0.55)';
+  for (let i = 0; i < 8; i++) {
+    const dx = (i * 120 - camX * 0.4) % GAME_W;
+    const baseY = 90 + ((i * 48) % 240);
+    const dy = baseY + ((drip * 50 + i * 40) % 80);
+    ctx.fillRect(dx, dy, 1, 4);
+  }
+
+  // Toxic green fumes rising from the floor (parallax, pulsating)
+  const fumePhase = Date.now() * 0.0008;
+  for (let i = 0; i < 14; i++) {
+    const cx = (i * 140 - camX * 0.5) % (GAME_W + 160) - 80;
+    const bob = Math.sin(fumePhase + i * 0.7) * 6;
+    const cy = GAME_H - 80 + bob;
+    const rad = 40 + Math.sin(fumePhase * 1.3 + i) * 8;
+    const alpha = 0.18 + Math.sin(fumePhase * 2 + i) * 0.05;
+    const fg = ctx.createRadialGradient(cx, cy, 2, cx, cy, rad);
+    fg.addColorStop(0, `rgba(140, 255, 120, ${alpha + 0.08})`);
+    fg.addColorStop(0.6, `rgba(80, 180, 80, ${alpha * 0.5})`);
+    fg.addColorStop(1, 'rgba(60, 120, 60, 0)');
+    ctx.fillStyle = fg;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Sludge pool along the bottom
+  ctx.fillStyle = '#1e2a14';
+  ctx.fillRect(0, GAME_H - 46, GAME_W, 46);
+  ctx.fillStyle = '#2a3c18';
+  ctx.fillRect(0, GAME_H - 46, GAME_W, 4);
+  // Toxic green shine on the sludge surface
+  ctx.fillStyle = 'rgba(120, 255, 120, 0.25)';
+  for (let i = 0; i < 30; i++) {
+    const sx = (i * 70 - camX * 0.9 + Math.sin(fumePhase * 2 + i) * 6) % GAME_W;
+    ctx.fillRect(sx, GAME_H - 44, 22, 1);
+  }
+
+  // Background rats scurrying along the far wall
+  const ratPhase = Date.now() * 0.002;
+  ctx.fillStyle = '#2a1e18';
+  for (let i = 0; i < 6; i++) {
+    const speed = 40 + (i % 3) * 15;
+    const rx = ((ratPhase * speed + i * 230) % (GAME_W + 120)) - 60;
+    const ry = GAME_H - 58 - (i % 2) * 4;
+    // Body + tail
+    ctx.fillRect(rx, ry, 8, 4);
+    ctx.fillRect(rx + 2, ry - 2, 4, 2);
+    ctx.fillStyle = '#ff2020';
+    ctx.fillRect(rx + 6, ry - 1, 1, 1);
+    ctx.fillStyle = '#2a1e18';
+    ctx.fillRect(rx - 4, ry + 1, 4, 1);
+  }
+
+  // Foreground grate pillars
+  ctx.fillStyle = '#0a0a08';
+  for (let i = 0; i < 5; i++) {
+    const px = (i * 220 - camX * 1.0) % (GAME_W + 240) - 120;
+    ctx.fillRect(px, GAME_H - 90, 14, 44);
+    // Rust highlights
+    ctx.fillStyle = '#3a2418';
+    ctx.fillRect(px + 1, GAME_H - 88, 2, 40);
+    ctx.fillRect(px + 11, GAME_H - 88, 2, 40);
+    ctx.fillStyle = '#0a0a08';
   }
 }
 
@@ -2060,50 +3487,59 @@ function drawRoundedRect(x, y, w, h, r, fillColor, strokeColor) {
 
 function drawHUD() {
   ctx.fillStyle = 'rgba(6, 6, 10, 0.84)';
-  ctx.fillRect(0, 0, GAME_W, 56);
+  ctx.fillRect(0, 0, UI_W, 56);
   ctx.strokeStyle = UI.border;
   ctx.lineWidth = 2;
-  ctx.strokeRect(0, 0, GAME_W, 56);
+  ctx.strokeRect(0, 0, UI_W, 56);
 
   drawPanel(10, 8, 150, 40, UI.border, 'rgba(16, 20, 12, 0.92)');
   drawPanel(170, 8, 250, 40, player.hasGuitar ? UI.secondary : 'rgba(255, 255, 255, 0.08)', 'rgba(20, 16, 28, 0.92)');
+  drawPanel(430, 8, 176, 40, UI.accent, 'rgba(28, 24, 8, 0.92)');
   drawPanel(616, 8, 174, 40, UI.border, 'rgba(24, 12, 16, 0.92)');
 
   ctx.textBaseline = 'top';
 
   ctx.fillStyle = UI.textDim;
-  ctx.font = 'bold 11px monospace';
+  ctx.font = 'bold 11px Consolas, "Courier New", monospace';
   ctx.fillText('SCORE', 20, 14);
   ctx.fillStyle = UI.primary;
-  ctx.font = 'bold 18px monospace';
+  ctx.font = 'bold 18px Consolas, "Courier New", monospace';
   ctx.fillText(score.toString().padStart(5, '0'), 20, 28);
 
   ctx.fillStyle = UI.textDim;
-  ctx.font = 'bold 11px monospace';
+  ctx.font = 'bold 11px Consolas, "Courier New", monospace';
   ctx.fillText('BEER', 96, 14);
   ctx.fillStyle = UI.accent;
-  ctx.font = 'bold 18px monospace';
+  ctx.font = 'bold 18px Consolas, "Courier New", monospace';
   ctx.fillText(totalBeer.toString().padStart(4, '0'), 96, 28);
 
   ctx.fillStyle = player.hasGuitar ? UI.secondary : UI.textDim;
-  ctx.font = 'bold 11px monospace';
+  ctx.font = 'bold 11px Consolas, "Courier New", monospace';
   ctx.fillText(player.hasGuitar ? 'GEAR' : 'NO GUITAR', 180, 14);
-  ctx.font = 'bold 16px monospace';
+  ctx.font = 'bold 16px Consolas, "Courier New", monospace';
   if (player.hasGuitar) {
     const g = guitarTypes[player.guitarType];
     ctx.fillStyle = g.color;
     ctx.fillText(g.name.toUpperCase(), 180, 28);
     ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 11px monospace';
+    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
     ctx.fillText('E / X ATTACK', 322, 30);
   } else {
     ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 13px monospace';
+    ctx.font = 'bold 13px Consolas, "Courier New", monospace';
     ctx.fillText('VISIT SHOP FOR A GUITAR', 180, 30);
   }
 
   ctx.fillStyle = UI.textDim;
-  ctx.font = 'bold 11px monospace';
+  ctx.font = 'bold 11px Consolas, "Courier New", monospace';
+  ctx.fillText('LEVEL ' + currentLevel + ' / ' + TOTAL_LEVELS, 442, 14);
+  ctx.fillStyle = UI.accent;
+  ctx.font = 'bold 16px Consolas, "Courier New", monospace';
+  const levelName = (LEVEL_NAMES[currentLevel] || 'STAGE ' + currentLevel).toUpperCase();
+  ctx.fillText(levelName, 442, 28);
+
+  ctx.fillStyle = UI.textDim;
+  ctx.font = 'bold 11px Consolas, "Courier New", monospace';
   ctx.fillText('LIVES', 626, 14);
   for (let i = 0; i < 3; i++) {
     const hx = 660 + i * 32;
@@ -2126,12 +3562,15 @@ function drawHUD() {
 // ---- Shop ----
 let shopCol = 0; // Column (0-2)
 let shopRow = 0; // Row (0-2)
+let shopFocus = 'grid'; // 'grid' | 'footer' - which region the dpad controls
+let shopFooterSel = 1;  // 0 = replay button, 1 = next-level button
 const SHOP_COLS = 3;
 const SHOP_ROWS = 3;
 let shopConfirming = false;
 let shopConfirmSelection = 0; // 0 - да, 1 - нет
 let shopConfirmReleaseRequired = false;
-let shopConfirmMode = 'buy';
+let shopConfirmMode = 'buy'; // 'buy' | 'equip' | 'proceed' | 'replay'
+let shopConfirmGuitarIdx = -1; // Snapshot of selected guitar when the dialog opens.
 let shopGpUpHeld = false;
 let shopGpDownHeld = false;
 let shopGpLeftHeld = false;
@@ -2146,14 +3585,71 @@ function shopSelection() {
   return guitarIndexFromShop(shopCol, shopRow);
 }
 
+// Helper: open the confirmation dialog for buying or equipping a specific guitar.
+// Using an explicit index (not live shopSelection) prevents mouse hover from silently
+// retargeting the dialog onto a different guitar.
+function openGuitarConfirm(idx, viaKeyboard) {
+  if (idx < 0 || idx >= guitarTypes.length) return;
+  const g = guitarTypes[idx];
+  const isOwned = ownedGuitars.includes(idx);
+  const isEquipped = isOwned && player.hasGuitar && player.guitarType === idx;
+  if (isEquipped) return; // Already equipped: nothing to confirm.
+  if (!isOwned && totalBeer < g.price) return; // Can't afford.
+  shopConfirming = true;
+  shopConfirmSelection = 0;
+  shopConfirmReleaseRequired = !!viaKeyboard;
+  shopConfirmMode = isOwned ? 'equip' : 'buy';
+  shopConfirmGuitarIdx = idx;
+}
+
+function openProceedConfirm(viaKeyboard) {
+  shopConfirming = true;
+  shopConfirmSelection = 0;
+  shopConfirmReleaseRequired = !!viaKeyboard;
+  shopConfirmMode = 'proceed';
+  shopConfirmGuitarIdx = -1;
+}
+
+function openReplayConfirm(viaKeyboard) {
+  if (lastCompletedLevel <= 0) return; // No level beaten yet - nothing to replay.
+  shopConfirming = true;
+  shopConfirmSelection = 0;
+  shopConfirmReleaseRequired = !!viaKeyboard;
+  shopConfirmMode = 'replay';
+  shopConfirmGuitarIdx = -1;
+}
+
+function closeConfirm() {
+  shopConfirming = false;
+  shopConfirmReleaseRequired = false;
+  shopConfirmGuitarIdx = -1;
+}
+
+function purchaseSelectedGuitar() {
+  const idx = shopConfirmGuitarIdx;
+  if (idx < 0 || idx >= guitarTypes.length) return;
+  const g = guitarTypes[idx];
+  if (shopConfirmMode === 'equip' && ownedGuitars.includes(idx)) {
+    player.hasGuitar = true;
+    player.guitarType = idx;
+  } else if (shopConfirmMode === 'buy' && !ownedGuitars.includes(idx) && totalBeer >= g.price) {
+    totalBeer -= g.price;
+    ownedGuitars.push(idx);
+    player.hasGuitar = true;
+    player.guitarType = idx;
+    buySound();
+  }
+}
+
 function drawShopItem(i, x, y) {
   const g = guitarTypes[i];
   const owned = ownedGuitars.includes(i);
+  const equipped = owned && player.hasGuitar && player.guitarType === i;
   const selected = shopSelection() === i;
   const canAfford = totalBeer >= g.price;
   const cardW = 220, cardH = 42;
-  const cardFill = selected ? 'rgba(57, 255, 20, 0.18)' : 'rgba(10, 8, 18, 0.88)';
-  const borderColor = selected ? UI.primary : 'rgba(255, 255, 255, 0.08)';
+  const cardFill = equipped ? 'rgba(255, 79, 216, 0.18)' : (selected ? 'rgba(57, 255, 20, 0.18)' : 'rgba(10, 8, 18, 0.88)');
+  const borderColor = equipped ? UI.secondary : (selected ? UI.primary : 'rgba(255, 255, 255, 0.08)');
 
   drawPanel(x, y, cardW, cardH, borderColor, cardFill);
   if (selected) {
@@ -2162,59 +3658,56 @@ function drawShopItem(i, x, y) {
     ctx.fillStyle = UI.primary;
     ctx.fillRect(x + 0, y + 0, 4, cardH);
   }
+  if (equipped) {
+    ctx.fillStyle = UI.secondary;
+    ctx.fillRect(x + 0, y + 0, 4, cardH);
+  }
 
   // Guitar color indicator
   ctx.fillStyle = owned ? '#333' : g.color;
   ctx.fillRect(x + 12, y + 9, 7, 24);
 
   // Name
-  ctx.fillStyle = owned ? UI.textDim : (selected ? UI.primary : UI.text);
-  ctx.font = 'bold 12px monospace';
+  ctx.fillStyle = equipped ? UI.secondary : (owned ? UI.textDim : (selected ? UI.primary : UI.text));
+  ctx.font = 'bold 12px Consolas, "Courier New", monospace';
   ctx.fillText(g.name.toUpperCase(), x + 28, y + 15);
 
-  // Price / owned
-  ctx.fillStyle = owned ? UI.success : (canAfford ? UI.accent : UI.danger);
-  ctx.font = owned ? 'bold 11px monospace' : 'bold 11px monospace';
-  ctx.fillText(owned ? 'OWNED' : g.price + ' BEER', x + 28, y + 29);
+  // Price / owned / equipped
+  let statusText, statusColor;
+  if (equipped) { statusText = 'EQUIPPED'; statusColor = UI.secondary; }
+  else if (owned) { statusText = 'OWNED'; statusColor = UI.success; }
+  else { statusText = g.price + ' BEER'; statusColor = canAfford ? UI.accent : UI.danger; }
+  ctx.fillStyle = statusColor;
+  ctx.font = 'bold 11px Consolas, "Courier New", monospace';
+  ctx.fillText(statusText, x + 28, y + 29);
 
   // Damage stat
   ctx.fillStyle = UI.textDim;
-  ctx.font = 'bold 11px monospace';
+  ctx.font = 'bold 11px Consolas, "Courier New", monospace';
   const dmgText = 'DMG ' + g.damage;
   ctx.fillText(dmgText, x + cardW - 14 - ctx.measureText(dmgText).width, y + 22);
 
-  addInteractiveRegion(x, y, cardW, cardH, () => {
-    shopCol = i % SHOP_COLS;
-    shopRow = Math.floor(i / SHOP_COLS);
-    if (shopSelection() === i) {
-      if (ownedGuitars.includes(i)) {
-        shopConfirming = true;
-        shopConfirmSelection = 0;
-        shopConfirmReleaseRequired = false;
-        shopConfirmMode = 'equip';
-      } else if (totalBeer >= g.price) {
-        shopConfirming = true;
-        shopConfirmSelection = 0;
-        shopConfirmReleaseRequired = false;
-        shopConfirmMode = 'buy';
-      }
-    }
-  }, () => {
-    shopCol = i % SHOP_COLS;
-    shopRow = Math.floor(i / SHOP_COLS);
-  });
+  // Don't register card interactions while the confirmation dialog is open so the
+  // dialog can't be silently retargeted by mouse hover/clicks on other cards.
+  if (!shopConfirming) {
+    addInteractiveRegion(x, y, cardW, cardH, () => {
+      shopCol = i % SHOP_COLS;
+      shopRow = Math.floor(i / SHOP_COLS);
+      openGuitarConfirm(i, false);
+    }, () => {
+      shopCol = i % SHOP_COLS;
+      shopRow = Math.floor(i / SHOP_COLS);
+    });
+  }
 }
 
 function drawShop() {
-  ctx.fillStyle = UI.bg;
-  ctx.fillRect(0, 0, GAME_W, GAME_H);
-
   // Header panel
   ctx.fillStyle = UI.panelBg;
-  ctx.fillRect(0, 0, GAME_W, 80);
+  ctx.fillRect(0, 0, UI_W, 80);
   ctx.strokeStyle = UI.border;
   ctx.beginPath();
-  ctx.moveTo(0, 80); ctx.lineTo(GAME_W, 80);
+  ctx.moveTo(0, 80); ctx.lineTo(UI_W, 80);
   ctx.stroke();
 
   // Title
@@ -2223,6 +3716,28 @@ function drawShop() {
   const shopTitle = 'GUITAR SHOP';
   const shopTitleWidth = ctx.measureText(shopTitle).width;
   ctx.fillText(shopTitle, 400 - shopTitleWidth / 2, 35);
+
+  // Currently equipped guitar (top-left indicator)
+  ctx.fillStyle = UI.textDim;
+  ctx.font = 'bold 11px Consolas, "Courier New", monospace';
+  ctx.fillText('EQUIPPED', 20, 20);
+  if (player.hasGuitar) {
+    const eq = guitarTypes[player.guitarType];
+    // Color swatch
+    ctx.fillStyle = eq.color;
+    ctx.fillRect(20, 32, 8, 22);
+    // Name + stats
+    ctx.fillStyle = UI.secondary;
+    ctx.font = 'bold 14px Consolas, "Courier New", monospace';
+    ctx.fillText(eq.name.toUpperCase(), 34, 45);
+    ctx.fillStyle = UI.textDim;
+    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
+    ctx.fillText('DMG ' + eq.damage, 34, 60);
+  } else {
+    ctx.fillStyle = UI.danger;
+    ctx.font = 'bold 14px Consolas, "Courier New", monospace';
+    ctx.fillText('NONE - BARE HANDS', 20, 50);
+  }
 
   // Beer balance
   ctx.fillStyle = UI.accent;
@@ -2233,7 +3748,7 @@ function drawShop() {
 
   // Preview section
   ctx.fillStyle = UI.textDim;
-  ctx.font = '12px monospace';
+  ctx.font = '12px Consolas, "Courier New", monospace';
   const previewLabel = 'PREVIEW';
   const previewLabelWidth = ctx.measureText(previewLabel).width;
   ctx.fillText(previewLabel, 400 - previewLabelWidth / 2, 100);
@@ -2258,11 +3773,11 @@ function drawShop() {
   // Guitar name under preview
   const prevGuitar = guitarTypes[shopSelection()];
   ctx.fillStyle = prevGuitar.color;
-  ctx.font = 'bold 16px monospace';
+  ctx.font = 'bold 16px Consolas, "Courier New", monospace';
   const previewName = prevGuitar.name.toUpperCase();
   ctx.fillText(previewName, 400 - ctx.measureText(previewName).width / 2, 245);
   ctx.fillStyle = UI.textDim;
-  ctx.font = 'bold 13px monospace';
+  ctx.font = 'bold 13px Consolas, "Courier New", monospace';
   const previewDmg = 'DMG ' + prevGuitar.damage;
   ctx.fillText(previewDmg, 400 - ctx.measureText(previewDmg).width / 2, 265);
 
@@ -2286,59 +3801,79 @@ function drawShop() {
     drawShopItem(i, x, y);
   }
 
-  // Confirmation dialog
+  // Confirmation dialog - semi-transparent backdrop to prevent accidental clicks on
+  // underlying UI and to visually emphasize the modal state.
   if (shopConfirming) {
-    const dialogW = 320;
-    const dialogH = 108;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillRect(0, 0, UI_W, UI_H);
+
+    const dialogW = 380;
+    const dialogH = 128;
     const dialogX = 400 - dialogW / 2;
-    const dialogY = 194;
+    const dialogY = 176;
     drawPanel(dialogX, dialogY, dialogW, dialogH, UI.primary, UI.panelBg);
 
     ctx.fillStyle = UI.text;
-    ctx.font = 'bold 16px monospace';
-    const confirmText = shopConfirmMode === 'equip' ? 'TAKE THIS GUITAR?' : 'BUY THIS GUITAR?';
-    const confirmWidth = ctx.measureText(confirmText).width;
-    ctx.fillText(confirmText, 400 - confirmWidth / 2, dialogY + 28);
+    ctx.font = 'bold 16px Consolas, "Courier New", monospace';
+    let confirmText;
+    if (shopConfirmMode === 'proceed') confirmText = 'HEAD OUT TO LEVEL ' + currentLevel + '?';
+    else if (shopConfirmMode === 'replay') confirmText = 'REPLAY LEVEL ' + lastCompletedLevel + '?';
+    else if (shopConfirmMode === 'equip') confirmText = 'EQUIP THIS GUITAR?';
+    else confirmText = 'BUY THIS GUITAR?';
+    ctx.fillText(confirmText, 400 - ctx.measureText(confirmText).width / 2, dialogY + 30);
 
-    const g = guitarTypes[shopSelection()];
-    ctx.fillStyle = g.color;
-    ctx.font = 'bold 13px monospace';
-    const guitarName = shopConfirmMode === 'equip' ? g.name.toUpperCase() + ' - FREE' : g.name.toUpperCase() + ' - ' + g.price + ' BEER';
-    const nameWidth = ctx.measureText(guitarName).width;
-    ctx.fillText(guitarName, 400 - nameWidth / 2, dialogY + 48);
+    if (shopConfirmMode === 'proceed' || shopConfirmMode === 'replay') {
+      ctx.fillStyle = UI.textDim;
+      ctx.font = 'bold 12px Consolas, "Courier New", monospace';
+      if (shopConfirmMode === 'replay') {
+        ctx.fillStyle = UI.accent;
+        const info = 'FARM MORE BEER - KEEP WHAT YOU EARN';
+        ctx.fillText(info, 400 - ctx.measureText(info).width / 2, dialogY + 58);
+      } else {
+        const info = player.hasGuitar
+          ? 'EQUIPPED: ' + guitarTypes[player.guitarType].name.toUpperCase()
+          : 'WARNING: NO GUITAR EQUIPPED';
+        ctx.fillStyle = player.hasGuitar ? UI.secondary : UI.danger;
+        ctx.fillText(info, 400 - ctx.measureText(info).width / 2, dialogY + 58);
+      }
+    } else if (shopConfirmGuitarIdx >= 0) {
+      const g = guitarTypes[shopConfirmGuitarIdx];
+      ctx.fillStyle = g.color;
+      ctx.font = 'bold 13px Consolas, "Courier New", monospace';
+      const guitarName = shopConfirmMode === 'equip'
+        ? g.name.toUpperCase() + ' - FREE'
+        : g.name.toUpperCase() + ' - ' + g.price + ' BEER';
+      ctx.fillText(guitarName, 400 - ctx.measureText(guitarName).width / 2, dialogY + 54);
+      ctx.fillStyle = UI.textDim;
+      ctx.font = 'bold 11px Consolas, "Courier New", monospace';
+      const balance = 'BALANCE AFTER: ' + (shopConfirmMode === 'buy' ? (totalBeer - g.price) : totalBeer) + ' BEER';
+      ctx.fillText(balance, 400 - ctx.measureText(balance).width / 2, dialogY + 72);
+    }
 
     // Yes/No buttons
-    const buttonY = dialogY + 72;
-    const buttonW = 64;
-    const buttonH = 22;
-    const buttonGap = 18;
+    const buttonY = dialogY + 90;
+    const buttonW = 76;
+    const buttonH = 26;
+    const buttonGap = 22;
     const totalButtonsWidth = buttonW * 2 + buttonGap;
     const yesX = 400 - totalButtonsWidth / 2;
     const noX = yesX + buttonW + buttonGap;
+
+    let yesLabel = 'YES';
+    let noLabel = 'NO';
+    if (shopConfirmMode === 'proceed') { yesLabel = 'GO';     noLabel = 'STAY'; }
+    if (shopConfirmMode === 'replay')  { yesLabel = 'REPLAY'; noLabel = 'CANCEL'; }
 
     // Yes button
     const yesFill = shopConfirmSelection === 0 ? UI.primary : UI.panelBg;
     const yesBorder = shopConfirmSelection === 0 ? UI.primary : UI.border;
     drawPanel(yesX, buttonY, buttonW, buttonH, yesBorder, yesFill);
     ctx.fillStyle = shopConfirmSelection === 0 ? UI.bg : UI.text;
-    ctx.font = 'bold 12px monospace';
-    ctx.fillText('YES', yesX + buttonW / 2 - ctx.measureText('YES').width / 2, buttonY + 15);
+    ctx.font = 'bold 13px Consolas, "Courier New", monospace';
+    ctx.fillText(yesLabel, yesX + buttonW / 2 - ctx.measureText(yesLabel).width / 2, buttonY + 18);
     addInteractiveRegion(yesX, buttonY, buttonW, buttonH, () => {
       shopConfirmSelection = 0;
-      const idx = shopSelection();
-      const g = guitarTypes[idx];
-      if (shopConfirmMode === 'equip' && ownedGuitars.includes(idx)) {
-        player.hasGuitar = true;
-        player.guitarType = idx;
-      } else if (!ownedGuitars.includes(idx) && totalBeer >= g.price) {
-        totalBeer -= g.price;
-        ownedGuitars.push(idx);
-        player.hasGuitar = true;
-        player.guitarType = idx;
-        buySound();
-      }
-      shopConfirming = false;
-      shopConfirmReleaseRequired = false;
+      confirmAccept();
     }, () => {
       shopConfirmSelection = 0;
     });
@@ -2348,76 +3883,131 @@ function drawShop() {
     const noBorder = shopConfirmSelection === 1 ? UI.primary : UI.border;
     drawPanel(noX, buttonY, buttonW, buttonH, noBorder, noFill);
     ctx.fillStyle = shopConfirmSelection === 1 ? UI.bg : UI.text;
-    ctx.font = 'bold 12px monospace';
-    ctx.fillText('NO', noX + buttonW / 2 - ctx.measureText('NO').width / 2, buttonY + 15);
+    ctx.font = 'bold 13px Consolas, "Courier New", monospace';
+    ctx.fillText(noLabel, noX + buttonW / 2 - ctx.measureText(noLabel).width / 2, buttonY + 18);
     addInteractiveRegion(noX, buttonY, buttonW, buttonH, () => {
       shopConfirmSelection = 1;
-      shopConfirming = false;
-      shopConfirmReleaseRequired = false;
+      closeConfirm();
     }, () => {
       shopConfirmSelection = 1;
     });
   }
 
-  // Footer instructions
+  // Footer panel with Replay / Next Level buttons
   ctx.fillStyle = UI.panelBg;
-  ctx.fillRect(0, GAME_H - 40, GAME_W, 40);
+  ctx.fillRect(0, UI_H - 44, UI_W, 44);
   ctx.strokeStyle = UI.border;
   ctx.beginPath();
-  ctx.moveTo(0, GAME_H - 40); ctx.lineTo(GAME_W, GAME_H - 40);
+  ctx.moveTo(0, UI_H - 44); ctx.lineTo(UI_W, UI_H - 44);
   ctx.stroke();
 
-  ctx.fillStyle = UI.textDim;
-  ctx.font = '14px Arial';
-  const footerText = 'KEYBOARD: E / ENTER SELECT, SPACE PLAY   |   GAMEPAD: A SELECT, START PLAY';
-  const footerWidth = ctx.measureText(footerText).width;
-  ctx.fillText(footerText, 400 - footerWidth / 2, 465);
+  const btnY = UI_H - 36;
+  const btnH = 28;
 
-  // Owned guitars reminder
-  if (ownedGuitars.length > 0) {
-    ctx.fillStyle = UI.textDim;
-    ctx.font = '12px Arial';
-    const ownedNames = ownedGuitars.map(i => guitarTypes[i].name).join(', ');
-    const ownedText = 'Owned: ' + ownedNames;
-    const ownedWidth = ctx.measureText(ownedText).width;
-    ctx.fillText(ownedText, 400 - ownedWidth / 2, 432);
+  const footerFocused = shopFocus === 'footer' && !shopConfirming;
+
+  // Replay button (only relevant after beating at least one level)
+  if (lastCompletedLevel > 0 && !shopConfirming) {
+    const replayW = 200;
+    const replayX = 20;
+    const replaySelected = footerFocused && shopFooterSel === 0;
+    drawPanel(replayX, btnY, replayW, btnH, UI.accent, replaySelected ? 'rgba(255, 204, 0, 0.32)' : 'rgba(255, 204, 0, 0.14)');
+    if (replaySelected) {
+      ctx.strokeStyle = UI.accent;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(replayX - 2, btnY - 2, replayW + 4, btnH + 4);
+      ctx.lineWidth = 1;
+    }
+    ctx.fillStyle = UI.accent;
+    ctx.font = 'bold 13px Consolas, "Courier New", monospace';
+    const replayLabel = 'REPLAY LVL ' + lastCompletedLevel + '  [R]';
+    ctx.fillText(replayLabel, replayX + replayW / 2 - ctx.measureText(replayLabel).width / 2, btnY + 18);
+    addInteractiveRegion(replayX, btnY, replayW, btnH, () => {
+      openReplayConfirm(false);
+    }, () => {
+      shopFocus = 'footer';
+      shopFooterSel = 0;
+    });
   }
+
+  // Next Level button (proceed)
+  if (!shopConfirming) {
+    const nextW = 230;
+    const nextX = UI_W - 20 - nextW;
+    const nextSelected = footerFocused && shopFooterSel === 1;
+    drawPanel(nextX, btnY, nextW, btnH, UI.primary, nextSelected ? 'rgba(57, 255, 20, 0.32)' : 'rgba(57, 255, 20, 0.16)');
+    if (nextSelected) {
+      ctx.strokeStyle = UI.primary;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(nextX - 2, btnY - 2, nextW + 4, btnH + 4);
+      ctx.lineWidth = 1;
+    }
+    ctx.fillStyle = UI.primary;
+    ctx.font = 'bold 13px Consolas, "Courier New", monospace';
+    const nextLabel = 'NEXT LVL ' + currentLevel + '  [SPACE]';
+    ctx.fillText(nextLabel, nextX + nextW / 2 - ctx.measureText(nextLabel).width / 2, btnY + 18);
+    addInteractiveRegion(nextX, btnY, nextW, btnH, () => {
+      audioCtx.resume();
+      openProceedConfirm(false);
+    }, () => {
+      shopFocus = 'footer';
+      shopFooterSel = 1;
+    });
+  }
+
+  // Center hint
+  ctx.fillStyle = UI.textDim;
+  ctx.font = 'bold 10px Consolas, "Courier New", monospace';
+  const hint = footerFocused
+    ? 'LEFT / RIGHT: CHOOSE   //   E / ENTER / A: CONFIRM'
+    : 'E / ENTER: SELECT GUITAR   //   DOWN: REPLAY / NEXT';
+  ctx.fillText(hint, 400 - ctx.measureText(hint).width / 2, btnY + 17);
 }
 
 function updateShop() {
   if (!shopConfirming) {
-    // 2D Navigation - move around the grid freely (keyboard or gamepad)
-    if ((keys['ArrowUp'] && !keys['ArrowUp_held']) || (keys['gpUp'] && !shopGpUpHeld)) {
-      shopRow = Math.max(0, shopRow - 1);
-      if (keys['ArrowUp']) keys['ArrowUp_held'] = true;
-      if (keys['gpUp']) shopGpUpHeld = true;
-    }
-    if (!keys['ArrowUp']) keys['ArrowUp_held'] = false;
-    if (!keys['gpUp']) shopGpUpHeld = false;
+    const replayAvailable = lastCompletedLevel > 0;
+    // Snap focus back to the grid if the replay button disappears mid-navigation.
+    if (shopFocus === 'footer' && !replayAvailable) shopFooterSel = 1;
 
-    if ((keys['ArrowDown'] && !keys['ArrowDown_held']) || (keys['gpDown'] && !shopGpDownHeld)) {
-      shopRow = Math.min(SHOP_ROWS - 1, shopRow + 1);
-      if (keys['ArrowDown']) keys['ArrowDown_held'] = true;
-      if (keys['gpDown']) shopGpDownHeld = true;
-    }
-    if (!keys['ArrowDown']) keys['ArrowDown_held'] = false;
-    if (!keys['gpDown']) shopGpDownHeld = false;
+    const pressUp    = (keys['ArrowUp']    && !keys['ArrowUp_held'])    || (keys['gpUp']    && !shopGpUpHeld);
+    const pressDown  = (keys['ArrowDown']  && !keys['ArrowDown_held'])  || (keys['gpDown']  && !shopGpDownHeld);
+    const pressLeft  = (keys['ArrowLeft']  && !keys['ArrowLeft_held'])  || (keys['gpLeft']  && !shopGpLeftHeld);
+    const pressRight = (keys['ArrowRight'] && !keys['ArrowRight_held']) || (keys['gpRight'] && !shopGpRightHeld);
 
-    if ((keys['ArrowLeft'] && !keys['ArrowLeft_held']) || (keys['gpLeft'] && !shopGpLeftHeld)) {
-      shopCol = Math.max(0, shopCol - 1);
-      if (keys['ArrowLeft']) keys['ArrowLeft_held'] = true;
-      if (keys['gpLeft']) shopGpLeftHeld = true;
+    if (shopFocus === 'grid') {
+      // 2D Navigation - move around the grid freely (keyboard or gamepad)
+      if (pressUp) shopRow = Math.max(0, shopRow - 1);
+      if (pressDown) {
+        // Dropping past the bottom row transfers focus to the Replay / Next-Level footer.
+        if (shopRow >= SHOP_ROWS - 1) {
+          shopFocus = 'footer';
+          shopFooterSel = replayAvailable ? (shopCol === 0 ? 0 : 1) : 1;
+        } else {
+          shopRow = Math.min(SHOP_ROWS - 1, shopRow + 1);
+        }
+      }
+      if (pressLeft)  shopCol = Math.max(0, shopCol - 1);
+      if (pressRight) shopCol = Math.min(SHOP_COLS - 1, shopCol + 1);
+    } else {
+      // Footer focus: Left/Right toggle between Replay and Next Level (if available).
+      if (pressLeft && replayAvailable)  shopFooterSel = 0;
+      if (pressRight) shopFooterSel = 1;
+      if (pressUp) {
+        shopFocus = 'grid';
+        shopRow = SHOP_ROWS - 1;
+      }
     }
-    if (!keys['ArrowLeft']) keys['ArrowLeft_held'] = false;
-    if (!keys['gpLeft']) shopGpLeftHeld = false;
 
-    if ((keys['ArrowRight'] && !keys['ArrowRight_held']) || (keys['gpRight'] && !shopGpRightHeld)) {
-      shopCol = Math.min(SHOP_COLS - 1, shopCol + 1);
-      if (keys['ArrowRight']) keys['ArrowRight_held'] = true;
-      if (keys['gpRight']) shopGpRightHeld = true;
-    }
-    if (!keys['ArrowRight']) keys['ArrowRight_held'] = false;
-    if (!keys['gpRight']) shopGpRightHeld = false;
+    // Latch press-release state for all navigation keys.
+    if (keys['ArrowUp'])    keys['ArrowUp_held']    = true; else keys['ArrowUp_held']    = false;
+    if (keys['ArrowDown'])  keys['ArrowDown_held']  = true; else keys['ArrowDown_held']  = false;
+    if (keys['ArrowLeft'])  keys['ArrowLeft_held']  = true; else keys['ArrowLeft_held']  = false;
+    if (keys['ArrowRight']) keys['ArrowRight_held'] = true; else keys['ArrowRight_held'] = false;
+    shopGpUpHeld    = !!keys['gpUp'];
+    shopGpDownHeld  = !!keys['gpDown'];
+    shopGpLeftHeld  = !!keys['gpLeft'];
+    shopGpRightHeld = !!keys['gpRight'];
 
     // Validate selection (skip empty cells)
     const idx = shopSelection();
@@ -2426,22 +4016,16 @@ function updateShop() {
       shopRow = 0;
     }
 
-    // Try to buy guitar (keyboard or gamepad)
+    // Enter / E / A button:
+    //  - on grid focus: open guitar buy/equip confirmation
+    //  - on footer focus: open replay or proceed confirmation
     if ((keys['Enter'] && !keys['Enter_held']) || (keys['KeyE'] && !keys['KeyE_held']) || (keys['gpJump'] && !keys['gpJump_held'])) {
-      const buyIdx = shopSelection();
-      if (buyIdx >= 0 && buyIdx < guitarTypes.length) {
-        const g = guitarTypes[buyIdx];
-        if (!ownedGuitars.includes(buyIdx) && totalBeer >= g.price) {
-          shopConfirming = true;
-          shopConfirmSelection = 0; // Default to yes
-          shopConfirmReleaseRequired = true;
-          shopConfirmMode = 'buy';
-        } else if (ownedGuitars.includes(buyIdx)) {
-          shopConfirming = true;
-          shopConfirmSelection = 0;
-          shopConfirmReleaseRequired = true;
-          shopConfirmMode = 'equip';
-        }
+      if (shopFocus === 'footer') {
+        audioCtx.resume();
+        if (shopFooterSel === 0 && replayAvailable) openReplayConfirm(true);
+        else openProceedConfirm(true);
+      } else {
+        openGuitarConfirm(shopSelection(), true);
       }
       if (keys['Enter']) keys['Enter_held'] = true;
       if (keys['KeyE']) keys['KeyE_held'] = true;
@@ -2451,14 +4035,23 @@ function updateShop() {
     if (!keys['KeyE']) keys['KeyE_held'] = false;
     if (!keys['gpJump']) keys['gpJump_held'] = false;
 
+    // Proceed to next level (now requires confirmation)
     if (!shopConfirming && ((keys['Space'] && !keys['Space_held']) || (keys['gpStart'] && !keys['gpStart_held']))) {
       audioCtx.resume();
-      startGame();
+      openProceedConfirm(true);
       if (keys['Space']) keys['Space_held'] = true;
       if (keys['gpStart']) keys['gpStart_held'] = true;
     }
     if (!keys['Space']) keys['Space_held'] = false;
     if (!keys['gpStart']) keys['gpStart_held'] = false;
+
+    // Replay previously completed level (R key)
+    if (!shopConfirming && keys['KeyR'] && !keys['KeyR_held'] && lastCompletedLevel > 0) {
+      audioCtx.resume();
+      openReplayConfirm(true);
+      keys['KeyR_held'] = true;
+    }
+    if (!keys['KeyR']) keys['KeyR_held'] = false;
   } else {
     if (!keys['Enter'] && !keys['KeyE'] && !keys['gpJump']) {
       shopConfirmReleaseRequired = false;
@@ -2483,22 +4076,11 @@ function updateShop() {
 
     // Confirm or cancel
     if (!shopConfirmReleaseRequired && ((keys['Enter'] && !keys['Enter_held']) || (keys['KeyE'] && !keys['KeyE_held']) || (keys['gpJump'] && !keys['gpJump_held']))) {
-      if (shopConfirmSelection === 0) { // Yes
-        const idx = shopSelection();
-        const g = guitarTypes[idx];
-        if (shopConfirmMode === 'equip' && ownedGuitars.includes(idx)) {
-          player.hasGuitar = true;
-          player.guitarType = idx;
-        } else if (!ownedGuitars.includes(idx) && totalBeer >= g.price) {
-          totalBeer -= g.price;
-          ownedGuitars.push(idx);
-          player.hasGuitar = true;
-          player.guitarType = idx;
-          buySound();
-        }
+      if (shopConfirmSelection === 0) { // Yes / Go
+        confirmAccept();
+      } else {
+        closeConfirm();
       }
-      shopConfirming = false;
-      shopConfirmReleaseRequired = false;
       if (keys['Enter']) keys['Enter_held'] = true;
       if (keys['KeyE']) keys['KeyE_held'] = true;
       if (keys['gpJump']) keys['gpJump_held'] = true;
@@ -2507,14 +4089,34 @@ function updateShop() {
     if (!keys['KeyE']) keys['KeyE_held'] = false;
     if (!keys['gpJump']) keys['gpJump_held'] = false;
 
-    // Cancel with Escape or B
-    if ((keys['Escape'] && !keys['Escape_held']) || keys['gpB']) {
-      shopConfirming = false;
-      shopConfirmReleaseRequired = false;
+    // Cancel with Escape or gamepad B (both now require press-release)
+    if ((keys['Escape'] && !keys['Escape_held']) || (keys['gpB'] && !keys['gpB_held'])) {
+      closeConfirm();
       if (keys['Escape']) keys['Escape_held'] = true;
+      if (keys['gpB']) keys['gpB_held'] = true;
     }
     if (!keys['Escape']) keys['Escape_held'] = false;
+    if (!keys['gpB']) keys['gpB_held'] = false;
   }
+}
+
+// Execute the action represented by the current confirmation dialog.
+function confirmAccept() {
+  if (shopConfirmMode === 'proceed') {
+    closeConfirm();
+    startGame();
+    return;
+  }
+  if (shopConfirmMode === 'replay') {
+    // Roll the target level back to the one the player just completed.
+    currentLevel = lastCompletedLevel;
+    levelDeathCount = 0;
+    closeConfirm();
+    startGame();
+    return;
+  }
+  purchaseSelectedGuitar();
+  closeConfirm();
 }
 
 // ---- Receipt ----
@@ -2540,12 +4142,9 @@ function updateReceipt() {
 }
 
 function drawReceipt() {
-  ctx.fillStyle = UI.bg;
-  ctx.fillRect(0, 0, GAME_W, GAME_H);
-
   // Paper texture background
   ctx.fillStyle = 'rgba(240, 235, 220, 0.95)';
-  ctx.fillRect(120, 30, GAME_W - 240, GAME_H - 60);
+  ctx.fillRect(120, 30, UI_W - 240, UI_H - 60);
   
   // Border
   ctx.strokeStyle = '#8b6914';
@@ -2554,13 +4153,13 @@ function drawReceipt() {
 
   // Receipt title
   ctx.fillStyle = '#8b6914';
-  ctx.font = 'bold 20px monospace';
+  ctx.font = 'bold 20px Consolas, "Courier New", monospace';
   const receiptTitle = '~~~ PUNK SHOP RECEIPT ~~~';
   const receiptTitleWidth = ctx.measureText(receiptTitle).width;
   ctx.fillText(receiptTitle, 400 - receiptTitleWidth / 2, 60);
 
   // Transaction ID & date
-  ctx.font = '12px monospace';
+  ctx.font = '12px Consolas, "Courier New", monospace';
   ctx.fillStyle = '#333';
   const txnId = 'TXN: #' + Math.floor(Math.random() * 100000).toString().padStart(5, '0');
   const txnIdWidth = ctx.measureText(txnId).width;
@@ -2576,14 +4175,14 @@ function drawReceipt() {
 
   // Items header
   ctx.fillStyle = '#333';
-  ctx.font = 'bold 13px monospace';
+  ctx.font = 'bold 13px Consolas, "Courier New", monospace';
   ctx.fillText('ITEM', 140, 130);
   ctx.fillText('QTY', 380, 130);
   ctx.fillText('PRICE', 450, 130);
   ctx.fillText('TOTAL', 530, 130);
 
   // Items list
-  ctx.font = '12px monospace';
+  ctx.font = '12px Consolas, "Courier New", monospace';
   let yPos = 155;
   let grandTotal = 0;
   const maxItems = 6;
@@ -2618,7 +4217,7 @@ function drawReceipt() {
 
   // Subtotal
   ctx.fillStyle = '#333';
-  ctx.font = '13px monospace';
+  ctx.font = '13px Consolas, "Courier New", monospace';
   ctx.fillText('Subtotal:', 380, yPos);
   ctx.fillStyle = '#8b6914';
   ctx.fillText(grandTotal + '¢', 520, yPos);
@@ -2639,13 +4238,13 @@ function drawReceipt() {
   // Grand Total
   yPos += 8;
   ctx.fillStyle = '#8b6914';
-  ctx.font = 'bold 16px monospace';
+  ctx.font = 'bold 16px Consolas, "Courier New", monospace';
   const finalTotal = grandTotal + tax;
   ctx.fillText('TOTAL: ' + finalTotal + '¢', 450, yPos);
 
   // Footer message
   ctx.fillStyle = '#666';
-  ctx.font = '11px monospace';
+  ctx.font = '11px Consolas, "Courier New", monospace';
   const thanks = 'Thank you for your punk!';
   const thanksWidth = ctx.measureText(thanks).width;
   ctx.fillText(thanks, 400 - thanksWidth / 2, 410);
@@ -2653,7 +4252,7 @@ function drawReceipt() {
   // Continue hint (fade in/out)
   const blinkAlpha = Math.abs(Math.sin(receiptTimer * 0.05));
   ctx.fillStyle = 'rgba(139, 105, 20, ' + (0.3 + blinkAlpha * 0.4) + ')';
-  ctx.font = '11px monospace';
+  ctx.font = '11px Consolas, "Courier New", monospace';
   const continueText = '[PRESS SPACE / A to continue]';
   const continueWidth = ctx.measureText(continueText).width;
   ctx.fillText(continueText, 400 - continueWidth / 2, 435);
@@ -2664,35 +4263,38 @@ function draw() {
   if (gameState === 'playing' && !bgGain) startBackgroundMusic();
   else if (gameState !== 'playing' && bgGain) stopBackgroundMusic();
 
+  // Keep backing store matched to current displayed size (crisp text, correct DPR).
+  syncCanvasBacking();
   ctx.clearRect(0, 0, GAME_W, GAME_H);
   clearInteractiveRegions();
 
   if (gameState === 'start') {
     ctx.fillStyle = UI.bg;
     ctx.fillRect(0, 0, GAME_W, GAME_H);
+    pushUITransform();
 
     ctx.fillStyle = 'rgba(57, 255, 20, 0.08)';
     for (let i = 0; i < 12; i++) {
       ctx.fillRect(36 + i * 62, 42 + (i % 3) * 20, 26, 4);
     }
 
-    drawRoundedRect(38, 42, 724, 396, 18, 'rgba(12, 10, 18, 0.94)', UI.border);
+    drawRoundedRect(38, 42, 724, 420, 18, 'rgba(12, 10, 18, 0.94)', UI.border);
     drawPanel(58, 68, 300, 336, 'rgba(255,255,255,0.08)', 'rgba(14, 14, 22, 0.98)');
     drawPanel(378, 68, 364, 336, 'rgba(255,255,255,0.08)', 'rgba(16, 14, 24, 0.98)');
 
     ctx.fillStyle = UI.primary;
-    ctx.font = 'bold 11px monospace';
+    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
     const leftKicker = 'CREATE YOUR PUNK';
     ctx.fillText(leftKicker, 82, 92);
 
     ctx.fillStyle = UI.text;
-    ctx.font = 'bold 40px monospace';
+    ctx.font = 'bold 40px Consolas, "Courier New", monospace';
     ctx.fillText('PUNK', 80, 128);
     ctx.fillStyle = UI.secondary;
     ctx.fillText('PLATFORMER', 80, 170);
 
     ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 12px monospace';
+    ctx.font = 'bold 12px Consolas, "Courier New", monospace';
     const leftSub1 = 'BUILD A LOOK. HIT PLAY.';
     const leftSub2 = 'GRAB BEER. SMASH ROBOTS.';
     ctx.fillText(leftSub1, 82, 206);
@@ -2705,19 +4307,19 @@ function draw() {
     ctx.fillRect(132, 338, 152, 6);
 
     ctx.save();
-    ctx.translate(208, 312);
-    ctx.scale(3.3, 3.3);
-    drawPixelPunk(-14, -44, 1, 1, false);
+    ctx.translate(208, 286);
+    ctx.scale(1.7, 1.7);
+    drawPixelPunk(-14, -18, 1, 1, false);
     ctx.restore();
 
     drawPanel(88, 364, 240, 18, 'rgba(255,255,255,0.08)', 'rgba(22, 18, 30, 0.92)');
     ctx.fillStyle = UI.accent;
-    ctx.font = 'bold 11px monospace';
+    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
     const aliasLine = selectedAlias().toUpperCase();
     ctx.fillText(aliasLine, 208 - ctx.measureText(aliasLine).width / 2, 376);
 
     ctx.fillStyle = UI.primary;
-    ctx.font = 'bold 11px monospace';
+    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
     ctx.fillText('CHARACTER CREATOR', 398, 92);
 
     const creatorFields = [
@@ -2762,22 +4364,26 @@ function draw() {
         ctx.fillStyle = 'rgba(57,255,20,0.1)';
         ctx.fillRect(400, y + 3, 320, 24);
       }
+      const rowCenterY = y + 15;
+      ctx.textBaseline = 'middle';
       ctx.fillStyle = UI.textDim;
-      ctx.font = 'bold 10px monospace';
-      ctx.fillText(field.label, 412, y + 10);
+      ctx.font = 'bold 10px Consolas, "Courier New", monospace';
+      ctx.fillText(field.label, 412, rowCenterY);
       ctx.fillStyle = field.color;
-      ctx.font = 'bold 12px monospace';
-      ctx.fillText(field.value, 544 - ctx.measureText(field.value).width / 2, y + 20);
+      ctx.font = 'bold 12px Consolas, "Courier New", monospace';
+      ctx.fillText(field.value, 560 - ctx.measureText(field.value).width / 2, rowCenterY);
       ctx.fillStyle = UI.textDim;
-      ctx.font = 'bold 10px monospace';
+      ctx.font = 'bold 10px Consolas, "Courier New", monospace';
       const arrows = '<   >';
-      ctx.fillText(arrows, 710 - ctx.measureText(arrows).width, y + 19);
+      ctx.fillText(arrows, 710 - ctx.measureText(arrows).width, rowCenterY);
+      ctx.textBaseline = 'alphabetic';
     });
 
     const settingsSelected = creatorSelection === 6;
     addInteractiveRegion(396, 354, 156, 34, () => {
       creatorSelection = 6;
       gameState = 'settings';
+      settingsReturnTo = 'start';
       settingsSelection = 0;
       characterProfile.pendingResolutionIndex = characterProfile.resolutionIndex;
     }, () => {
@@ -2785,7 +4391,7 @@ function draw() {
     });
     drawPanel(396, 354, 156, 34, settingsSelected ? UI.accent : UI.border, settingsSelected ? 'rgba(255,204,0,0.18)' : 'rgba(18,16,28,0.94)');
     ctx.fillStyle = settingsSelected ? UI.accent : UI.textDim;
-    ctx.font = 'bold 14px monospace';
+    ctx.font = 'bold 14px Consolas, "Courier New", monospace';
     const settingsText = 'SETTINGS';
     ctx.fillText(settingsText, 474 - ctx.measureText(settingsText).width / 2, 376);
 
@@ -2798,39 +4404,41 @@ function draw() {
     });
     drawPanel(568, 354, 156, 34, playSelected ? UI.secondary : UI.primary, playSelected ? 'rgba(255,79,216,0.18)' : 'rgba(57,255,20,0.14)');
     ctx.fillStyle = playSelected ? UI.secondary : UI.primary;
-    ctx.font = 'bold 15px monospace';
+    ctx.font = 'bold 15px Consolas, "Courier New", monospace';
     const playText = 'PLAY THE RIOT';
     ctx.fillText(playText, 646 - ctx.measureText(playText).width / 2, 376);
 
     ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 10px monospace';
-    ctx.fillText('ARROWS / STICK NAVIGATE', 396, 402);
-    ctx.fillText('E / ENTER / A SELECT', 396, 416);
-    ctx.fillText('SPACE / START PLAY', 564, 416);
+    ctx.font = 'bold 10px Consolas, "Courier New", monospace';
+    ctx.fillText('ARROWS / STICK NAVIGATE', 396, 416);
+    ctx.fillText('E / ENTER / A SELECT', 396, 430);
+    ctx.fillText('SPACE / START PLAY', 564, 430);
 
     if (ownedGuitars.length > 0) {
-      drawPanel(58, 412, 684, 18, 'rgba(255, 204, 0, 0.18)', 'rgba(18, 16, 26, 0.9)');
+      drawPanel(58, 444, 684, 14, 'rgba(255, 204, 0, 0.18)', 'rgba(18, 16, 26, 0.9)');
       ctx.fillStyle = UI.accent;
-      ctx.font = 'bold 10px monospace';
+      ctx.font = 'bold 9px Consolas, "Courier New", monospace';
       const ownedNames = ownedGuitars.map(i => guitarTypes[i].name).join(', ');
       const ownedLine = 'LOCKER: ' + ownedNames.toUpperCase();
-      ctx.fillText(ownedLine, 400 - ctx.measureText(ownedLine).width / 2, 424);
+      ctx.fillText(ownedLine, 400 - ctx.measureText(ownedLine).width / 2, 454);
     }
+    popUITransform();
     return;
   }
 
   if (gameState === 'settings') {
     ctx.fillStyle = UI.bg;
     ctx.fillRect(0, 0, GAME_W, GAME_H);
+    pushUITransform();
 
     drawRoundedRect(116, 68, 568, 340, 18, 'rgba(12, 10, 18, 0.94)', UI.border);
     ctx.fillStyle = UI.primary;
-    ctx.font = 'bold 14px monospace';
+    ctx.font = 'bold 14px Consolas, "Courier New", monospace';
     const settingsTitle = 'DISPLAY SETTINGS';
     ctx.fillText(settingsTitle, 400 - ctx.measureText(settingsTitle).width / 2, 106);
 
     ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 11px monospace';
+    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
     const settingsSub = 'CHOOSE A RESOLUTION THAT FITS YOUR SCREEN';
     ctx.fillText(settingsSub, 400 - ctx.measureText(settingsSub).width / 2, 128);
 
@@ -2843,14 +4451,14 @@ function draw() {
     });
     drawPanel(170, 166, 460, 46, resolutionSelected ? UI.primary : 'rgba(255,255,255,0.08)', resolutionSelected ? 'rgba(57,255,20,0.12)' : 'rgba(18,16,28,0.94)');
     ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 11px monospace';
+    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
     ctx.fillText('RESOLUTION', 190, 180);
     ctx.fillStyle = UI.accent;
-    ctx.font = 'bold 18px monospace';
+    ctx.font = 'bold 18px Consolas, "Courier New", monospace';
     const resolutionText = pendingResolution().name;
     ctx.fillText(resolutionText, 400 - ctx.measureText(resolutionText).width / 2, 201);
     ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 12px monospace';
+    ctx.font = 'bold 12px Consolas, "Courier New", monospace';
     const arrows = '<   >';
     ctx.fillText(arrows, 606 - ctx.measureText(arrows).width, 195);
 
@@ -2864,7 +4472,7 @@ function draw() {
     });
     drawPanel(170, 236, 460, 34, applySelected ? UI.primary : 'rgba(255,255,255,0.08)', applySelected ? 'rgba(57,255,20,0.14)' : 'rgba(18,16,28,0.94)');
     ctx.fillStyle = applySelected ? UI.primary : UI.textDim;
-    ctx.font = 'bold 14px monospace';
+    ctx.font = 'bold 14px Consolas, "Courier New", monospace';
     const applyText = 'APPLY RESOLUTION';
     ctx.fillText(applyText, 400 - ctx.measureText(applyText).width / 2, 258);
 
@@ -2872,90 +4480,91 @@ function draw() {
     addInteractiveRegion(250, 288, 300, 34, () => {
       settingsSelection = 2;
       characterProfile.pendingResolutionIndex = characterProfile.resolutionIndex;
-      gameState = 'start';
+      gameState = settingsReturnTo === 'paused' ? 'paused' : 'start';
     }, () => {
       settingsSelection = 2;
     });
     drawPanel(250, 288, 300, 34, backSelected ? UI.secondary : UI.border, backSelected ? 'rgba(255,79,216,0.18)' : 'rgba(18,16,28,0.94)');
     ctx.fillStyle = backSelected ? UI.secondary : UI.textDim;
-    ctx.font = 'bold 14px monospace';
-    const backText = 'BACK TO CREATOR';
+    ctx.font = 'bold 14px Consolas, "Courier New", monospace';
+    const backText = settingsReturnTo === 'paused' ? 'BACK TO PAUSE' : 'BACK TO CREATOR';
     ctx.fillText(backText, 400 - ctx.measureText(backText).width / 2, 310);
 
     ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 10px monospace';
+    ctx.font = 'bold 10px Consolas, "Courier New", monospace';
     const currentLine = 'CURRENT: ' + selectedResolution().name;
     ctx.fillText(currentLine, 400 - ctx.measureText(currentLine).width / 2, 348);
     ctx.fillText('LEFT / RIGHT CHANGE   //   E / ENTER / A SELECT', 400 - ctx.measureText('LEFT / RIGHT CHANGE   //   E / ENTER / A SELECT').width / 2, 366);
     ctx.fillText('SPACE / ESC / START RETURN', 400 - ctx.measureText('SPACE / ESC / START RETURN').width / 2, 382);
+    popUITransform();
     return;
   }
 
   if (gameState === 'receipt') {
     updateReceipt();
+    ctx.fillStyle = UI.bg;
+    ctx.fillRect(0, 0, GAME_W, GAME_H);
+    pushUITransform();
     drawReceipt();
+    popUITransform();
     return;
   }
 
   if (gameState === 'shop') {
     updateShop();
+    ctx.fillStyle = UI.bg;
+    ctx.fillRect(0, 0, GAME_W, GAME_H);
+    pushUITransform();
     drawShop();
+    popUITransform();
     return;
   }
 
   if (gameState === 'gameover') {
     ctx.fillStyle = UI.bg;
     ctx.fillRect(0, 0, GAME_W, GAME_H);
+    pushUITransform();
 
     // Panel
     drawRoundedRect(180, 100, 440, 280, 16, UI.panelBg, UI.danger);
+    const centerX = 400;
 
     ctx.fillStyle = UI.danger;
-    ctx.font = 'bold 48px monospace';
-    ctx.fillText('GAME OVER', 280, 180);
+    ctx.font = 'bold 48px Consolas, "Courier New", monospace';
+    const gameOverText = 'GAME OVER';
+    ctx.fillText(gameOverText, centerX - ctx.measureText(gameOverText).width / 2, 180);
 
     ctx.fillStyle = UI.text;
-    ctx.font = '24px monospace';
-    ctx.fillText('Score: ' + score, 340, 240);
+    ctx.font = '22px Consolas, "Courier New", monospace';
+    const scoreText = 'Score: ' + score;
+    ctx.fillText(scoreText, centerX - ctx.measureText(scoreText).width / 2, 232);
     ctx.fillStyle = UI.accent;
-    ctx.fillText('Beer earned: ' + score, 330, 280);
+    const beerText = 'Beer earned: ' + score;
+    ctx.fillText(beerText, centerX - ctx.measureText(beerText).width / 2, 262);
+
+    // Attempts indicator (only relevant on levels 2+, where respawns are allowed).
+    const willRespawn = currentLevel > 1 && levelDeathCount < MAX_DEATHS_PER_LEVEL;
+    ctx.font = 'bold 14px Consolas, "Courier New", monospace';
+    if (currentLevel > 1) {
+      const attemptsUsed = levelDeathCount;
+      const attemptsLeft = Math.max(0, MAX_DEATHS_PER_LEVEL - attemptsUsed);
+      ctx.fillStyle = willRespawn ? UI.primary : UI.danger;
+      const attemptsLine = willRespawn
+        ? `LEVEL ${currentLevel}  ATTEMPTS LEFT: ${attemptsLeft}/${MAX_DEATHS_PER_LEVEL}`
+        : `OUT OF ATTEMPTS - BACK TO LEVEL 1`;
+      ctx.fillText(attemptsLine, centerX - ctx.measureText(attemptsLine).width / 2, 292);
+    }
 
     // Retry button
-    drawRoundedRect(280, 310, 240, 50, 8, UI.primary, UI.primary);
+    const btnW = 300;
+    drawRoundedRect(centerX - btnW / 2, 310, btnW, 50, 8, UI.primary, UI.primary);
     ctx.fillStyle = UI.bg;
-    ctx.font = 'bold 18px monospace';
-    const retryText = 'PRESS SPACE / A TO RETRY';
-    const retryWidth = ctx.measureText(retryText).width;
-    ctx.fillText(retryText, 400 - retryWidth / 2, 340);
-    return;
-  }
-
-  if (gameState === 'win') {
-    ctx.fillStyle = UI.bg;
-    ctx.fillRect(0, 0, GAME_W, GAME_H);
-
-    // Panel
-    drawRoundedRect(180, 100, 440, 280, 16, UI.panelBg, UI.success);
-
-    ctx.fillStyle = UI.success;
-    ctx.font = 'bold 48px monospace';
-    ctx.fillText('YOU WIN!', 310, 175);
-
-    ctx.fillStyle = UI.primary;
-    ctx.font = 'bold 28px monospace';
-    ctx.fillText('Score: ' + score, 330, 235);
-
-    ctx.fillStyle = UI.accent;
-    ctx.font = '24px monospace';
-    ctx.fillText('Total beer: ' + totalBeer, 320, 280);
-
-    // Shop button
-    drawRoundedRect(250, 310, 300, 50, 8, UI.secondary, UI.secondary);
-    ctx.fillStyle = UI.bg;
-    ctx.font = 'bold 18px monospace';
-    const shopText = 'PRESS SPACE / A FOR SHOP';
-    const shopWidth = ctx.measureText(shopText).width;
-    ctx.fillText(shopText, 400 - shopWidth / 2, 340);
+    ctx.font = 'bold 16px Consolas, "Courier New", monospace';
+    const retryText = willRespawn
+      ? `RESPAWN ON LEVEL ${currentLevel}  (SPACE / A)`
+      : 'PRESS SPACE / A TO RETRY';
+    ctx.fillText(retryText, centerX - ctx.measureText(retryText).width / 2, 340);
+    popUITransform();
     return;
   }
 
@@ -2965,11 +4574,86 @@ function draw() {
   drawFlag();
   beerCans.forEach(drawCoin);
   enemies.forEach(drawEnemy);
+  drawPoisonHazards();
 
   const blink = player.invincible && Math.floor(player.invincibleTimer / 6) % 2 === 0;
   if (!blink) drawPixelPunk(player.x - camX, player.y, player.facing, player.animFrame, player.hasGuitar);
 
+  pushUITransform();
   drawHUD();
+  if (gameState === 'paused') drawPauseOverlay();
+  popUITransform();
+}
+
+function drawPauseOverlay() {
+  // Dim the gameplay behind the menu.
+  ctx.fillStyle = 'rgba(6, 6, 12, 0.72)';
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  const panelW = 360;
+  const panelH = 260;
+  const panelX = (GAME_W - panelW) / 2;
+  const panelY = (GAME_H - panelH) / 2;
+  drawRoundedRect(panelX, panelY, panelW, panelH, 14, 'rgba(14, 12, 22, 0.96)', UI.primary);
+
+  ctx.fillStyle = UI.primary;
+  ctx.font = 'bold 28px Consolas, "Courier New", monospace';
+  const title = 'PAUSED';
+  ctx.fillText(title, (GAME_W - ctx.measureText(title).width) / 2, panelY + 54);
+
+  ctx.fillStyle = UI.textDim;
+  ctx.font = 'bold 10px Consolas, "Courier New", monospace';
+  const sub = 'ESC / START  TO RESUME';
+  ctx.fillText(sub, (GAME_W - ctx.measureText(sub).width) / 2, panelY + 74);
+
+  const labels = ['RESUME', 'SETTINGS', 'EXIT TO MENU'];
+  const itemW = 280;
+  const itemH = 38;
+  const itemX = (GAME_W - itemW) / 2;
+  const startY = panelY + 100;
+
+  for (let i = 0; i < labels.length; i++) {
+    const y = startY + i * (itemH + 10);
+    const selected = pauseSelection === i;
+    const isExit = i === 2;
+    const border = selected ? (isExit ? UI.danger : UI.primary) : UI.border;
+    const fill = selected
+      ? (isExit ? 'rgba(255, 51, 51, 0.16)' : 'rgba(57, 255, 20, 0.14)')
+      : 'rgba(18, 16, 28, 0.94)';
+    drawPanel(itemX, y, itemW, itemH, border, fill);
+
+    addInteractiveRegion(itemX, y, itemW, itemH, () => {
+      pauseSelection = i;
+      if (i === 0) gameState = 'playing';
+      else if (i === 1) {
+        gameState = 'settings';
+        settingsReturnTo = 'paused';
+        settingsSelection = 0;
+        characterProfile.pendingResolutionIndex = characterProfile.resolutionIndex;
+      } else {
+        if (bgGain) stopBackgroundMusic();
+        lives = 3;
+        score = 0;
+        levelDeathCount = 0;
+        lastCompletedLevel = 0;
+        currentLevel = 1;
+        gameState = 'start';
+        creatorSelection = 7;
+      }
+    }, () => {
+      pauseSelection = i;
+    });
+
+    ctx.fillStyle = selected ? (isExit ? UI.danger : UI.primary) : UI.textDim;
+    ctx.font = 'bold 16px Consolas, "Courier New", monospace';
+    const tw = ctx.measureText(labels[i]).width;
+    ctx.fillText(labels[i], (GAME_W - tw) / 2, y + 25);
+  }
+
+  ctx.fillStyle = UI.textDim;
+  ctx.font = 'bold 9px Consolas, "Courier New", monospace';
+  const hint = 'UP / DOWN NAVIGATE   //   E / ENTER / A SELECT';
+  ctx.fillText(hint, (GAME_W - ctx.measureText(hint).width) / 2, panelY + panelH - 18);
 }
 
 // ---- Game Loop ----
@@ -2992,18 +4676,22 @@ function startGame() {
   shopCol = 0;
   shopRow = 0;
 
-  // Equip best owned guitar
+  // Equip logic: respect the guitar the player explicitly selected/bought in the shop.
+  // Only auto-pick the best guitar if the player hasn't chosen one yet (or the chosen
+  // one is somehow no longer owned, e.g. after a game reset).
   if (ownedGuitars.length > 0) {
     player.hasGuitar = true;
-    // Find best guitar (highest damage, then by index as proxy for tier)
-    let bestIdx = ownedGuitars[0];
-    for (const idx of ownedGuitars) {
-      if (guitarTypes[idx].damage > guitarTypes[bestIdx].damage ||
-          (guitarTypes[idx].damage === guitarTypes[bestIdx].damage && idx > bestIdx)) {
-        bestIdx = idx;
+    if (!ownedGuitars.includes(player.guitarType)) {
+      // Fall back to the strongest owned guitar.
+      let bestIdx = ownedGuitars[0];
+      for (const idx of ownedGuitars) {
+        if (guitarTypes[idx].damage > guitarTypes[bestIdx].damage ||
+            (guitarTypes[idx].damage === guitarTypes[bestIdx].damage && idx > bestIdx)) {
+          bestIdx = idx;
+        }
       }
+      player.guitarType = bestIdx;
     }
-    player.guitarType = bestIdx;
   } else {
     player.hasGuitar = false;
   }
@@ -3011,11 +4699,6 @@ function startGame() {
   gameState = 'playing';
   if (audioCtx.state === 'suspended') audioCtx.resume();
 }
-
-window.addEventListener('keydown', e => {
-  // Space handled by handleGameStateTransitions() now
-  // This listener kept for future custom key handling if needed
-});
 
 buildLevel();
 requestAnimationFrame(loop);
