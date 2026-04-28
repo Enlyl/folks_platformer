@@ -1,4 +1,4 @@
-# Punk Platformer / Панк Платформер
+# Platformer / Платформер
 
 [English](#english) | [Русский](#русский)
 
