@@ -8,7 +8,7 @@
 
 ### 🎮 About
 
-**Punk Platformer** is a 2D side-scrolling platformer game built with pure HTML5 Canvas and JavaScript. No external dependencies required — just open `index.html` in your browser and play!
+**Platformer** is a 2D side-scrolling platformer game built with pure HTML5 Canvas and JavaScript. No external dependencies required — just open `index.html` in your browser and play!
 
 ### Features / Особенности
 
@@ -65,7 +65,7 @@ Go to **Settings** in the main menu to change resolution:
 
 ### 🎮 О проекте
 
-**Панк Платформер** — это 2D сайд-скроллинговый платформер, созданный на чистом HTML5 Canvas и JavaScript. Никаких внешних зависимостей — просто откройте `index.html` в браузере и играйте!
+**Платформер** — это 2D сайд-скроллинговый платформер, созданный на чистом HTML5 Canvas и JavaScript. Никаких внешних зависимостей — просто откройте `index.html` в браузере и играйте!
 
 ### Особенности
 
