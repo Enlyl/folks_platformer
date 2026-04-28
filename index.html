@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Punk Platformer</title>
+<title>ЧИКИ-БРИКИ</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0812'/><rect x='7' y='2' width='2' height='1' fill='%2339ff14'/><rect x='6' y='3' width='4' height='1' fill='%2339ff14'/><rect x='5' y='4' width='6' height='2' fill='%2339ff14'/><rect x='5' y='6' width='6' height='6' fill='%23f1b897'/><rect x='6' y='8' width='1' height='1' fill='%230a0812'/><rect x='9' y='8' width='1' height='1' fill='%230a0812'/><rect x='7' y='10' width='2' height='1' fill='%23a02020'/><rect x='4' y='12' width='8' height='3' fill='%23ff4fd8'/></svg>">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -136,19 +136,19 @@
     <div id="bottomPanel">
       <div id="controls">
         <div class="control-row">
-          <span class="key">← →</span><span class="action">Move</span>
-          <span class="key">SPACE</span><span class="action">Jump</span>
-          <span class="key">E</span><span class="action">Attack</span>
+          <span class="key">← →</span><span class="action">Движение</span>
+          <span class="key">SPACE</span><span class="action">Прыжок</span>
+          <span class="key">E</span><span class="action">Атака</span>
         </div>
         <div class="control-row gamepad">
-          <span class="key">L Stick</span><span class="action">Move</span>
-          <span class="key">A</span><span class="action">Jump</span>
-          <span class="key">A</span><span class="action">Select</span>
-          <span class="key">START</span><span class="action">Play / Continue</span>
+          <span class="key">L Stick</span><span class="action">Движение</span>
+          <span class="key">A</span><span class="action">Прыжок</span>
+          <span class="key">A</span><span class="action">Выбор</span>
+          <span class="key">START</span><span class="action">Играть / Дальше</span>
         </div>
       </div>
       <div id="volumeControl">
-        <label for="volume">Volume</label>
+        <label for="volume">Громкость</label>
         <input type="range" id="volume" min="0" max="1" step="0.01" value="0.28">
       </div>
     </div>
@@ -346,6 +346,45 @@ function loadGuitarImages() {
 
 window.addEventListener('load', loadGuitarImages);
 
+// ---- Equipment image loader (distortion pedal sprite, etc.) ----
+// `distortion`     - default pedal sprite (pickup, HUD charge icons)
+// `distortionStomp` - alt sprite shown under the player during the stomp
+//                    animation (a more "in-action" pose).
+const equipmentImages = {};
+const distortionPedalImage = new Image();
+distortionPedalImage.src = 'equipment/distortion.png';
+distortionPedalImage.onerror = () => console.warn('Could not load distortion pedal sprite');
+equipmentImages.distortion = distortionPedalImage;
+
+const distortionStompImage = new Image();
+distortionStompImage.src = 'equipment/distortion-2.png';
+distortionStompImage.onerror = () => console.warn('Could not load distortion stomp sprite');
+equipmentImages.distortionStomp = distortionStompImage;
+
+// Generic equipment / perk icon loader. Used by the start-screen character
+// preview panel to show two perk icons next to the chosen person. Icon files
+// live in /equipment as small PNGs.
+const PERK_ICON_PATHS = {
+  distortion:  'equipment/distortion.png',
+  guitar:      'equipment/guitar.png',
+  beer_health: 'equipment/beer_health.png',
+  sound_wave:  'equipment/sound_wave.png',
+  kraskopult:  'equipment/kraskopult.png',
+  vinyl:       'equipment/vinyl.png',
+  coffee_cup:  'equipment/coffee_cup.png',
+  sweet_talk:  'equipment/sweet_talk.png',
+  golden_beer: 'equipment/golden_beer.png',
+  ball:        'equipment/ball.png',
+  beer_one:    'equipment/beer_one.png',
+};
+Object.entries(PERK_ICON_PATHS).forEach(([key, path]) => {
+  if (equipmentImages[key]) return;
+  const img = new Image();
+  img.src = path;
+  img.onerror = () => console.warn('Could not load equipment icon:', path);
+  equipmentImages[key] = img;
+});
+
 // ---- Audio ----
 const audioCtx = new AudioContext();
 function beep(freq, dur, type='square') {
@@ -523,6 +562,7 @@ function pollGamepad() {
   keys['gpAttack'] = false;
   keys['gpStart'] = false;
   keys['gpB'] = false;
+  keys['gpPedal'] = false;
 
   // Left Stick (for movement/navigation)
   gamepadState.leftStickX = gp.axes[0] || 0;
@@ -554,6 +594,13 @@ function pollGamepad() {
 
   // B button (button 1) for alternative actions if needed
   if (gp.buttons[1]?.pressed) keys['gpB'] = true;
+
+  // Y button (button 3) or right shoulder (button 5) / right trigger (button 7)
+  // = trigger the distortion pedal AoE attack. Y is the standard "special"
+  // button on most layouts; the shoulder bindings give the player flexibility.
+  if (gp.buttons[3]?.pressed || gp.buttons[5]?.pressed || gp.buttons[7]?.pressed) {
+    keys['gpPedal'] = true;
+  }
 
   // LT/RT triggers
   gamepadState.triggers.left = gp.buttons[4]?.pressed || (gp.axes[4] > 0.5);
@@ -638,13 +685,111 @@ const characterProfile = {
   skinIndex: 0,
   pantsIndex: 0,
 };
-let creatorSelection = 7;
+// ---- Person roster (image-based character selection) ----
+// The start screen now lets the player pick one of 5 preset heroes whose
+// art lives in the /person folder. The chosen image is rendered in place of
+// the procedural pixel sprite during gameplay.
+// Each person carries a small palette used during gameplay so the procedural
+// pixel sprite roughly matches the chosen portrait (skin, hair, shirt, pants,
+// shoes). hairStyle controls whether the head sports a flat short-hair cap
+// or a more "spiked / punk" silhouette.
+const personRoster = [
+  {
+    name: 'ИГОРЬ',   src: 'person/igor.png',
+    palette: { skin: '#e8a47c', skinShade: '#b87856', hair: '#3b2418', hairShade: '#22140a', shirt: '#1f3aa3', shirtShade: '#142573', pants: '#1d2a3c', pantsShade: '#11192b', shoes: '#3a2614', accent: '#1f3aa3' },
+    hairStyle: 'short',
+    tagline: 'ХАРИЗМАТИЧНЫЙ ФРОНТМЕН',
+    perks: [
+      { icon: 'distortion', name: 'ДИСТОРШН',  desc: '+1 заряд педали в начале забега' },
+      { icon: 'guitar',     name: 'СОЛО',      desc: '+10% урона гитарой' },
+    ],
+  },
+  {
+    name: 'КОСТЯ', src: 'person/kostya.png',
+    palette: { skin: '#e8a47c', skinShade: '#b87856', hair: '#4a2c18', hairShade: '#2c170a', shirt: '#7a8088', shirtShade: '#4f555c', pants: '#3a6ea0', pantsShade: '#264a72', shoes: '#1a1a1a', accent: '#7a8088' },
+    hairStyle: 'short',
+    tagline: 'СУРОВЫЙ БАСИСТ',
+    perks: [
+      { icon: 'beer_health', name: 'РЕГЕНЕРАЦИЯ', desc: 'Пиво восстанавливает жизнь' },
+      { icon: 'sound_wave',  name: 'ГРОМКОСТЬ',   desc: 'Атаки оглушают врагов' },
+    ],
+  },
+  {
+    name: 'ВАЛЕРА', src: 'person/valera.png',
+    palette: { skin: '#e8a47c', skinShade: '#b87856', hair: '#5a3018', hairShade: '#34190a', shirt: '#181818', shirtShade: '#0a0a0a', pants: '#4a6e8c', pantsShade: '#2e4a64', shoes: '#1a1a1a', accent: '#c43a2c' },
+    hairStyle: 'short',
+    tagline: 'УЛИЧНЫЙ ХУДОЖНИК',
+    perks: [
+      { icon: 'kraskopult', name: 'ГРАФФИТИ', desc: 'Бонусные очки за стены' },
+      { icon: 'vinyl',      name: 'ВИНИЛ',    desc: '+1 жизнь за каждый уровень' },
+    ],
+  },
+  {
+    name: 'СЕРЖ', src: 'person/serj.png',
+    palette: { skin: '#e8a47c', skinShade: '#b87856', hair: '#3a2010', hairShade: '#1f0f06', shirt: '#f4c81a', shirtShade: '#b89010', pants: '#5a5a5a', pantsShade: '#3a3a3a', shoes: '#1a1a1a', accent: '#f4c81a' },
+    hairStyle: 'buzz',
+    tagline: 'КОФЕЙНЫЙ ВИРТУОЗ',
+    perks: [
+      { icon: 'coffee_cup', name: 'ЭСПРЕССО',  desc: 'Бег и атаки быстрее на 15%' },
+      { icon: 'sweet_talk', name: 'УГОВОРЫ',   desc: 'Скидки в магазине -10%' },
+    ],
+  },
+  {
+    name: 'ЛЁХА',   src: 'person/leha.png',
+    palette: { skin: '#f1b58c', skinShade: '#c08260', hair: '#e6c97a', hairShade: '#a88a3c', shirt: '#2c3438', shirtShade: '#181e22', pants: '#e8e3d0', pantsShade: '#a8a18a', shoes: '#5a3a20', accent: '#2c3438' },
+    hairStyle: 'short',
+    tagline: 'КОРОЛЬ ВЕЧЕРИНОК',
+    perks: [
+      { icon: 'golden_beer', name: 'ЗОЛОТОЕ ПИВКО', desc: 'Каждое 10-е пиво — двойное' },
+      { icon: 'ball',        name: 'УДАР',          desc: 'Отбрасывает врагов сильнее' },
+    ],
+  },
+];
+personRoster.forEach(p => {
+  const img = new Image();
+  img.src = p.src;
+  p.img = img;
+});
+let selectedPersonIndex = 0;
+function selectedPerson() { return personRoster[selectedPersonIndex]; }
+
+// creatorSelection: 0 = portrait grid, 1 = SETTINGS, 2 = PLAY
+// Default focus is the portrait row so the player is gently nudged to pick a
+// character before they hit PLAY.
+let creatorSelection = 0;
+// Last focused action button on the bottom row of the start screen. Used by
+// the directional UP/DOWN navigation so that DOWN from the portrait grid
+// returns the cursor to whichever bottom-row button the player used most
+// recently (PLAY by default).
+let lastBottomRowSelection = 2;
+// Idle-dance: if the player leaves the start screen untouched for 30 seconds,
+// the previewed character starts pritantsovyvat'. Any directional / confirm
+// keypress or click resets the timer.
+let startScreenLastInputMs = Date.now();
+const START_SCREEN_DANCE_DELAY_MS = 30000;
+// Per-character dance presets - one motif per personRoster slot (modulo).
+// bobAmp: vertical bounce in px; swayAmp: horizontal sway in px;
+// rotAmp: rotation amplitude in radians; freq: oscillations per second;
+// phase: phase offset for sway vs bob (creates figure-8 / out-of-sync motions).
+const DANCE_STYLES = [
+  { bobAmp: 6, swayAmp: 0, rotAmp: 0.07, freq: 4.5, phase: 0 },         // HEADBANG
+  { bobAmp: 1, swayAmp: 7, rotAmp: 0.03, freq: 3.0, phase: 0 },         // SWAY
+  { bobAmp: 7, swayAmp: 0, rotAmp: 0.00, freq: 6.5, phase: 0 },         // BOUNCE
+  { bobAmp: 4, swayAmp: 4, rotAmp: 0.00, freq: 4.0, phase: Math.PI / 2 }, // GROOVE
+  { bobAmp: 2, swayAmp: 3, rotAmp: 0.10, freq: 3.8, phase: 0 },         // ROCK-TILT
+];
+// Character-selection confirmation dialog state. Pressing CONFIRM on the
+// portrait row pops a modal that asks the player to lock in their pick;
+// it forwards focus to PLAY on YES, stays put on NO.
+let creatorConfirming = false;
+let creatorConfirmSelection = 0; // 0 = YES, 1 = NO
+let creatorConfirmReleaseRequired = false; // wait for confirm button release before re-accepting
 let settingsSelection = 0;
 let settingsReturnTo = 'start'; // 'start' (from creator) or 'paused' (from pause menu)
 let pauseSelection = 0;
-const CREATOR_ITEMS = ['Preset', 'Hair', 'Shirt', 'Pattern', 'Skin', 'Pants', 'Settings', 'Play'];
-const SETTINGS_ITEMS = ['Resolution', 'Apply', 'Back'];
-const PAUSE_ITEMS = ['Resume', 'Settings', 'Exit to Menu'];
+const CREATOR_ITEMS = ['Пацан', 'Настройки', 'Играть'];
+const SETTINGS_ITEMS = ['Разрешение', 'Применить', 'Назад'];
+const PAUSE_ITEMS = ['Продолжить', 'Настройки', 'Выйти в меню'];
 
 // ---- Guitars ----
 // Shape types: strat, mustang, jaguar, lespaul, superstart, explorer, vshape
@@ -653,15 +798,15 @@ const PAUSE_ITEMS = ['Resume', 'Settings', 'Exit to Menu'];
 // Prices bumped so buying a guitar meaningfully drains the player's beer stash
 // instead of feeling like pocket change next to per-level income.
 const guitarTypes = [
-  { name: 'Stratocaster', price: 220,  damage: 1, color: '#d4a556', shape: 'strat' },
-  { name: 'Telecaster',   price: 460,  damage: 2, color: '#c9a961', shape: 'mustang' },
-  { name: 'Jaguar',       price: 800,  damage: 3, color: '#2b8cc4', shape: 'jaguar' },
-  { name: 'Les Paul',     price: 1300, damage: 4, color: '#cc3a1f', shape: 'lespaul' },
-  { name: 'Superstrat',   price: 2000, damage: 5, color: '#0066bb', shape: 'superstart' },
-  { name: 'Explorer',     price: 2900, damage: 6, color: '#f5f5f5', shape: 'explorer' },
-  { name: 'Firebird',     price: 4000, damage: 7, color: '#ff6f18', shape: 'firebird' },
-  { name: 'Iceman',       price: 5400, damage: 10, color: '#6fdfff', shape: 'iceman' },
-  { name: 'V-Guitar',     price: 7200, damage: 15, color: '#cc1111', shape: 'vshape' },
+  { name: 'Стратокастер', price: 220,  damage: 1, color: '#d4a556', shape: 'strat' },
+  { name: 'Телекастер',   price: 460,  damage: 2, color: '#c9a961', shape: 'mustang' },
+  { name: 'Ягуар',          price: 800,  damage: 3, color: '#2b8cc4', shape: 'jaguar' },
+  { name: 'Лес Пол',         price: 1300, damage: 4, color: '#cc3a1f', shape: 'lespaul' },
+  { name: 'Суперстрат',     price: 2000, damage: 5, color: '#0066bb', shape: 'superstart' },
+  { name: 'Эксплорер',      price: 2900, damage: 6, color: '#f5f5f5', shape: 'explorer' },
+  { name: 'Файерберд',     price: 4000, damage: 7, color: '#ff6f18', shape: 'firebird' },
+  { name: 'Айсмен',         price: 5400, damage: 10, color: '#6fdfff', shape: 'iceman' },
+  { name: 'В-Гитара',      price: 7200, damage: 15, color: '#cc1111', shape: 'vshape' },
 ];
 let ownedGuitars = [];
 
@@ -669,7 +814,7 @@ let ownedGuitars = [];
 // the final boss at least once. Appears in the shop on subsequent playthroughs,
 // free of charge (consider it the scene-cred reward) with the highest damage.
 const DIY_PUNK_GUITAR = {
-  name: 'DIY Punk Guitar',
+  name: 'Панк-Гитара Своими Руками',
   price: 0,
   damage: 30,
   color: '#ff2aa0',
@@ -698,14 +843,14 @@ function markBossBeaten() {
 
 // ---- Punk Shop Items for Receipt ----
 const punkShopItems = [
-  { name: 'Leather Jacket', basePrice: 15 },
-  { name: 'Spiked Boots', basePrice: 12 },
-  { name: 'Skull Ring', basePrice: 8 },
-  { name: 'Beer Pong Set', basePrice: 20 },
-  { name: 'Vinyl Records', basePrice: 10 },
-  { name: 'Chain Wallet', basePrice: 7 },
-  { name: 'Fishnets', basePrice: 5 },
-  { name: 'Band T-Shirt', basePrice: 9 },
+  { name: 'Кожаная куртка', basePrice: 15 },
+  { name: 'Берцы с шипами', basePrice: 12 },
+  { name: 'Кольцо с черепом', basePrice: 8 },
+  { name: 'Набор бир-понга', basePrice: 20 },
+  { name: 'Виниловые пластинки', basePrice: 10 },
+  { name: 'Цепь-кошелёк', basePrice: 7 },
+  { name: 'Сетка-чулки', basePrice: 5 },
+  { name: 'Футболка группы', basePrice: 9 },
 ];
 
 function generateReceiptItems(beerCollected) {
@@ -772,11 +917,11 @@ const bossProjectiles = [];   // energy bullets fired by the boss
 let currentLevel = 1;
 const TOTAL_LEVELS = 5;
 const LEVEL_NAMES = {
-  1: 'City Streets',
-  2: 'Village Outskirts',
-  3: 'Junkyard',
-  4: 'Sewers',
-  5: 'Neon Cyber City',
+  1: 'Городские улицы',
+  2: 'Окраины деревни',
+  3: 'Свалка',
+  4: 'Канализация',
+  5: 'Неоновый Кибер-Город',
 };
 let levelDeathCount = 0; // Tracks deaths on the current non-level-1 level.
 const MAX_DEATHS_PER_LEVEL = 3;
@@ -1605,7 +1750,7 @@ const player = {
 };
 
 function selectedAlias() {
-  return presetPlayers[characterProfile.presetIndex].name;
+  return selectedPerson().name;
 }
 function selectedResolution() {
   return creatorOptions.resolutions[characterProfile.resolutionIndex];
@@ -1668,45 +1813,112 @@ function updateStartScreen() {
   const moveUp = (keys['ArrowUp'] && !keys['ArrowUp_held']) || (keys['KeyW'] && !keys['KeyW_held']) || (keys['gpUp'] && !keys['gpUp_held']);
   const moveDown = (keys['ArrowDown'] && !keys['ArrowDown_held']) || (keys['KeyS'] && !keys['KeyS_held']) || (keys['gpDown'] && !keys['gpDown_held']);
   const confirm = (keys['Enter'] && !keys['Enter_held']) || (keys['KeyE'] && !keys['KeyE_held']) || (keys['gpJump'] && !keys['gpJump_held']);
+  const cancel = (keys['Escape'] && !keys['Escape_held']) || (keys['gpB'] && !keys['gpB_held']);
   const play = (keys['Space'] && !keys['Space_held']) || (keys['gpStart'] && !keys['gpStart_held']);
 
-  if (moveUp) creatorSelection = Math.max(0, creatorSelection - 1);
-  if (moveDown) creatorSelection = Math.min(CREATOR_ITEMS.length - 1, creatorSelection + 1);
+  // Any meaningful input resets the idle-dance timer.
+  if (movePrev || moveNext || moveUp || moveDown || confirm || cancel || play) {
+    startScreenLastInputMs = Date.now();
+  }
 
-  if (movePrev || moveNext || confirm) {
+  // ---- Character-confirmation dialog ----
+  // While the modal is open, navigation/CONFIRM are scoped to the dialog and
+  // the regular start-screen inputs are paused.
+  if (creatorConfirming) {
+    // Wait for the CONFIRM button used to OPEN the dialog to release before
+    // letting another press immediately re-confirm and dismiss it.
+    if (!keys['Enter'] && !keys['KeyE'] && !keys['gpJump']) {
+      creatorConfirmReleaseRequired = false;
+    }
+    if (movePrev) creatorConfirmSelection = 0;
+    if (moveNext) creatorConfirmSelection = 1;
+    if (!creatorConfirmReleaseRequired && confirm) {
+      if (creatorConfirmSelection === 0) {
+        // YES - lock in the chosen person and drop focus to PLAY.
+        creatorSelection = 2;
+        lastBottomRowSelection = 2;
+      }
+      creatorConfirming = false;
+    }
+    if (cancel) {
+      creatorConfirming = false;
+    }
+    // Latch held state so the held-detector below sees the same frame state.
+    keys['ArrowLeft_held']  = keys['ArrowLeft'];
+    keys['ArrowRight_held'] = keys['ArrowRight'];
+    keys['ArrowUp_held']    = keys['ArrowUp'];
+    keys['ArrowDown_held']  = keys['ArrowDown'];
+    keys['KeyA_held'] = keys['KeyA'];
+    keys['KeyD_held'] = keys['KeyD'];
+    keys['KeyW_held'] = keys['KeyW'];
+    keys['KeyS_held'] = keys['KeyS'];
+    keys['Enter_held'] = keys['Enter'];
+    keys['KeyE_held']  = keys['KeyE'];
+    keys['Space_held'] = keys['Space'];
+    keys['Escape_held'] = keys['Escape'];
+    keys['gpLeft_held']  = keys['gpLeft'];
+    keys['gpRight_held'] = keys['gpRight'];
+    keys['gpUp_held']    = keys['gpUp'];
+    keys['gpDown_held']  = keys['gpDown'];
+    keys['gpJump_held']  = keys['gpJump'];
+    keys['gpStart_held'] = keys['gpStart'];
+    keys['gpB_held']     = keys['gpB'];
+    return;
+  }
+
+  // Vertical navigation is strictly between two rows:
+  //   row 0 = portrait grid (creatorSelection 0)
+  //   row 1 = action buttons (creatorSelection 1 = SETTINGS, 2 = PLAY)
+  // UP from any action button goes to the portrait row (NOT to the sibling
+  // button); DOWN from the portrait row drops onto whichever action button
+  // was last focused (defaults to PLAY on first entry).
+  if (moveUp && creatorSelection !== 0) {
+    creatorSelection = 0;
+  }
+  if (moveDown && creatorSelection === 0) {
+    creatorSelection = lastBottomRowSelection || 2;
+  }
+
+  if (movePrev || moveNext) {
     const dir = movePrev ? -1 : 1;
-    switch (creatorSelection) {
-      case 0:
-        applyPreset((characterProfile.presetIndex + presetPlayers.length + dir) % presetPlayers.length);
-        break;
-      case 1:
-        characterProfile.hairIndex = (characterProfile.hairIndex + creatorOptions.hairColors.length + dir) % creatorOptions.hairColors.length;
-        break;
-      case 2:
-        characterProfile.shirtIndex = (characterProfile.shirtIndex + creatorOptions.shirtColors.length + dir) % creatorOptions.shirtColors.length;
-        break;
-      case 3:
-        characterProfile.patternIndex = (characterProfile.patternIndex + creatorOptions.shirtPatterns.length + dir) % creatorOptions.shirtPatterns.length;
-        break;
-      case 4:
-        characterProfile.skinIndex = (characterProfile.skinIndex + creatorOptions.skinTones.length + dir) % creatorOptions.skinTones.length;
-        break;
-      case 5:
-        characterProfile.pantsIndex = (characterProfile.pantsIndex + creatorOptions.pantsColors.length + dir) % creatorOptions.pantsColors.length;
-        break;
-      case 6:
-        if (movePrev || moveNext) creatorSelection = 7;
-        else if (confirm) { gameState = 'settings'; settingsReturnTo = 'start'; settingsSelection = 0; }
-        break;
-      case 7:
-        if (movePrev) creatorSelection = 6;
-        else if (confirm || play) startGame();
-        break;
+    if (creatorSelection === 0) {
+      // Cycle the chosen person portrait.
+      selectedPersonIndex = (selectedPersonIndex + personRoster.length + dir) % personRoster.length;
+    } else {
+      // Bottom row: LEFT goes to SETTINGS (1), RIGHT goes to PLAY (2). Strictly
+      // directional - if the user presses LEFT while already on SETTINGS, the
+      // cursor stays put instead of teleporting to PLAY (and vice-versa). This
+      // matches typical gamepad d-pad cursor behaviour.
+      if (movePrev) creatorSelection = 1;
+      else if (moveNext) creatorSelection = 2;
+    }
+  }
+
+  if (confirm) {
+    if (creatorSelection === 0) {
+      // Open the character-selection confirmation modal. The actual lock-in
+      // and focus-shift to PLAY happens when the player answers YES inside
+      // the modal (handled at the top of this function).
+      creatorConfirming = true;
+      creatorConfirmSelection = 0;
+      creatorConfirmReleaseRequired = true;
+    } else if (creatorSelection === 1) {
+      gameState = 'settings';
+      settingsReturnTo = 'start';
+      settingsSelection = 0;
+    } else if (creatorSelection === 2) {
+      startGame();
     }
   }
 
   // SPACE / START should always launch the game, regardless of current selection
   if (play) startGame();
+
+  // Remember which bottom-row button is currently focused so DOWN from the
+  // portrait grid returns to the same column the player last used.
+  if (creatorSelection === 1 || creatorSelection === 2) {
+    lastBottomRowSelection = creatorSelection;
+  }
 
   keys['ArrowLeft_held'] = keys['ArrowLeft'];
   keys['ArrowRight_held'] = keys['ArrowRight'];
@@ -1801,7 +2013,7 @@ function updatePauseScreen() {
       lastCompletedLevel = 0;
       currentLevel = 1;
       gameState = 'start';
-      creatorSelection = 7;
+      creatorSelection = 2;
     }
   }
 
@@ -3174,6 +3386,10 @@ function drawGuitarOnBack(x, y, facing, guitarIdx) {
   ctx.restore();
 }
 
+// Procedural pixel sprite of the selected hero. Uses a per-person palette
+// (skin/hair/shirt/pants/shoes) so the in-game character matches the
+// portrait picked on the start screen. Includes a simple 4-frame walk
+// cycle (alternating legs + arms, gentle body bob).
 function drawPixelPunk(x, y, facing, frame, showGuitar) {
   ctx.save();
   ctx.translate(x + 14, y);
@@ -3182,12 +3398,21 @@ function drawPixelPunk(x, y, facing, frame, showGuitar) {
 
   const walkCycle = frame % 4;
   const isMoving = Math.abs(player.vx) > 0.5 && player.onGround;
-  const legOffset = isMoving ? (walkCycle < 2 ? 3 : -1) : 0;
-  const armSwing = isMoving ? (walkCycle < 2 ? 2 : -2) : 0;
-  const bodyBob = isMoving ? (walkCycle % 2 === 0 ? 0 : 1) : 0;
-  const hairOffset = isMoving ? (walkCycle % 2 === 0 ? 0 : 1) : Math.sin(frame * 0.8) * 1;
+  const isAir = !player.onGround;
+  // Walking animation: legs swing in opposite directions, arms counter-swing,
+  // body bobs up & down by 1px each step.
+  const legOffset = isMoving ? (walkCycle < 2 ? 3 : -3) : 0;
+  const armSwing  = isMoving ? (walkCycle < 2 ? 2 : -2) : 0;
+  const bodyBob   = isMoving ? (walkCycle % 2 === 0 ? 0 : -1) : 0;
+  // In the air: tuck legs slightly and raise arms.
+  const airLeg    = isAir ? -2 : 0;
+  const airArm    = isAir ? -2 : 0;
 
-  // Attack swing with proper guitar shape
+  const pal = selectedPerson().palette;
+  const style = selectedPerson().hairStyle;
+
+  // Attack swing with proper guitar shape (drawn first so the body covers
+  // the haft of the guitar held in-hand).
   if (player.attacking) {
     ctx.save();
     ctx.translate(35, 22 + bodyBob);
@@ -3196,110 +3421,110 @@ function drawPixelPunk(x, y, facing, frame, showGuitar) {
     ctx.restore();
   }
 
-  // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.fillRect(2, 42, 24, 4);
+  // Soft elliptical shadow on the ground.
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(14, 46, 12, 2.5, 0, 0, Math.PI * 2);
+  ctx.fill();
 
-  // Legs
-  ctx.fillStyle = selectedPantsColor();
-  ctx.fillRect(4, 32 - legOffset, 8, 14 + legOffset);
-  ctx.fillRect(16, 32 + legOffset, 8, 14 - legOffset);
+  // ---- Legs ----
+  // Front leg (left in local coords) and back leg swing oppositely. The
+  // pants colour lives on the upper portion; the cuff/shoe is darker.
+  const frontLegY = 32 - legOffset + airLeg;
+  const backLegY  = 32 + legOffset + airLeg;
+  const frontLegH = 12 + legOffset;
+  const backLegH  = 12 - legOffset;
+  // Front leg
+  ctx.fillStyle = pal.pants;
+  ctx.fillRect(5, frontLegY, 7, frontLegH);
+  ctx.fillStyle = pal.pantsShade;
+  ctx.fillRect(5, frontLegY, 2, frontLegH); // shadow side
+  // Back leg
+  ctx.fillStyle = pal.pants;
+  ctx.fillRect(16, backLegY, 7, backLegH);
+  ctx.fillStyle = pal.pantsShade;
+  ctx.fillRect(16, backLegY, 2, backLegH);
 
-  // White outline for pants
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(3, 31 - legOffset, 10, 15 + legOffset);
-  ctx.strokeRect(15, 31 + legOffset, 10, 15 - legOffset);
+  // ---- Shoes ----
+  ctx.fillStyle = pal.shoes;
+  ctx.fillRect(4, frontLegY + frontLegH, 9, 3);
+  ctx.fillRect(15, backLegY + backLegH, 9, 3);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(4, frontLegY + frontLegH + 2, 9, 1);
+  ctx.fillRect(15, backLegY + backLegH + 2, 9, 1);
 
-  // Boots
-  ctx.fillStyle = '#333';
-  ctx.fillRect(2, 42, 10, 4);
-  ctx.fillRect(16, 42, 10, 4);
+  // ---- Torso (T-shirt / jacket) ----
+  // Main shirt block.
+  ctx.fillStyle = pal.shirt;
+  ctx.fillRect(4, 16 + bodyBob, 20, 17);
+  // Shadow side (gives it volume).
+  ctx.fillStyle = pal.shirtShade;
+  ctx.fillRect(4, 16 + bodyBob, 4, 17);
+  ctx.fillRect(4, 30 + bodyBob, 20, 3);
+  // Neckline (skin V at top center).
+  ctx.fillStyle = pal.skin;
+  ctx.fillRect(12, 16 + bodyBob, 4, 2);
+  // Subtle accent stripe on chest (just a small character-specific dab).
+  ctx.fillStyle = pal.accent;
+  ctx.fillRect(12, 22 + bodyBob, 4, 2);
 
-  // Body (jacket)
-  ctx.fillStyle = '#111';
-  ctx.fillRect(4, 14 + bodyBob, 20, 20);
-
-  // Jacket stripes
-  ctx.fillStyle = selectedShirtColor();
-  ctx.fillRect(4, 18 + bodyBob, 20, 3);
-  ctx.fillRect(4, 26 + bodyBob, 20, 3);
-
-  // Shirt pattern / logo
-  ctx.fillStyle = '#f0f0f0';
-  switch (selectedShirtPattern()) {
-    case 'misfits':
-      ctx.fillRect(11, 20 + bodyBob, 6, 2);
-      ctx.fillRect(10, 22 + bodyBob, 8, 2);
-      ctx.fillRect(11, 24 + bodyBob, 2, 3);
-      ctx.fillRect(15, 24 + bodyBob, 2, 3);
-      ctx.fillRect(13, 25 + bodyBob, 2, 1);
-      break;
-    case 'mohawk-skull':
-      ctx.fillRect(12, 20 + bodyBob, 4, 4);
-      ctx.fillRect(11, 24 + bodyBob, 6, 2);
-      ctx.fillRect(12, 19 + bodyBob, 1, 2);
-      ctx.fillRect(14, 18 + bodyBob, 1, 3);
-      ctx.fillStyle = '#111';
-      ctx.fillRect(13, 21 + bodyBob, 1, 1);
-      ctx.fillRect(15, 21 + bodyBob, 1, 1);
-      break;
-    case 'jester':
-      ctx.fillStyle = '#ffcc00';
-      ctx.fillRect(11, 20 + bodyBob, 2, 5);
-      ctx.fillRect(15, 20 + bodyBob, 2, 5);
-      ctx.fillStyle = '#ff4fd8';
-      ctx.fillRect(13, 23 + bodyBob, 2, 4);
-      break;
-    case 'huy':
-      ctx.fillStyle = '#f0f0f0';
-      ctx.font = 'bold 4px Consolas, "Courier New", monospace';
-      ctx.fillText('X*Y', 10, 25 + bodyBob);
-      break;
-    case 'punks-not-dead':
-      ctx.fillStyle = '#f0f0f0';
-      ctx.fillRect(10, 20 + bodyBob, 8, 1);
-      ctx.fillRect(10, 22 + bodyBob, 8, 1);
-      ctx.fillRect(10, 24 + bodyBob, 8, 1);
-      break;
-  }
-
-  // Arms
-  ctx.fillStyle = '#111';
-  ctx.fillRect(0, 16 + armSwing, 5, 14);
-  ctx.fillRect(23, 16 - armSwing, 5, 14);
-
+  // ---- Arms ----
+  // Sleeves match the shirt; hands are skin coloured. Both swing opposite
+  // to the legs for a natural walk.
+  const lArmY = 17 + armSwing + airArm;
+  const rArmY = 17 - armSwing + airArm;
+  ctx.fillStyle = pal.shirt;
+  ctx.fillRect(0,  lArmY, 5, 9);
+  ctx.fillRect(23, rArmY, 5, 9);
+  ctx.fillStyle = pal.shirtShade;
+  ctx.fillRect(0,  lArmY, 2, 9);
+  ctx.fillRect(23, rArmY, 2, 9);
   // Hands
-  ctx.fillStyle = selectedSkinTone();
-  ctx.fillRect(0, 28 + armSwing, 5, 5);
-  ctx.fillRect(23, 28 - armSwing, 5, 5);
+  ctx.fillStyle = pal.skin;
+  ctx.fillRect(0,  lArmY + 9, 5, 5);
+  ctx.fillRect(23, rArmY + 9, 5, 5);
+  ctx.fillStyle = pal.skinShade;
+  ctx.fillRect(0,  lArmY + 12, 5, 2);
+  ctx.fillRect(23, rArmY + 12, 5, 2);
 
-  // Head
-  ctx.fillStyle = selectedSkinTone();
-  ctx.fillRect(6, 2 + bodyBob, 16, 14);
+  // ---- Head ----
+  // Slightly narrower than the shoulders; one-pixel chin shadow underneath.
+  ctx.fillStyle = pal.skin;
+  ctx.fillRect(7, 3 + bodyBob, 14, 13);
+  ctx.fillStyle = pal.skinShade;
+  ctx.fillRect(7, 14 + bodyBob, 14, 2); // chin/jaw shade
+  ctx.fillRect(7, 3 + bodyBob, 2, 13);  // side shade
 
-  // Hair (mohawk)
-  ctx.fillStyle = selectedHairColor();
-  ctx.fillRect(8, -6 + hairOffset + bodyBob, 12, 10);
-  // Spikes
-  for (let i = 0; i < 5; i++) {
-    ctx.fillRect(7 + i * 3, -10 + hairOffset + bodyBob, 2, 5);
+  // ---- Hair ----
+  if (style === 'buzz') {
+    // Tight buzzcut - thin cap that hugs the skull.
+    ctx.fillStyle = pal.hair;
+    ctx.fillRect(7, 2 + bodyBob, 14, 4);
+    ctx.fillStyle = pal.hairShade;
+    ctx.fillRect(7, 5 + bodyBob, 14, 1);
+  } else {
+    // Short hair - small cap with a side parting.
+    ctx.fillStyle = pal.hair;
+    ctx.fillRect(7, 0 + bodyBob, 14, 6);
+    ctx.fillRect(6, 2 + bodyBob, 1, 4); // sideburn left
+    ctx.fillRect(21, 2 + bodyBob, 1, 4); // sideburn right
+    ctx.fillStyle = pal.hairShade;
+    ctx.fillRect(7, 5 + bodyBob, 14, 1);
+    // little fringe sweep
+    ctx.fillStyle = pal.hair;
+    ctx.fillRect(8, 5 + bodyBob, 4, 2);
   }
 
+  // ---- Face ----
   // Eyes
   ctx.fillStyle = '#000';
-  ctx.fillRect(8, 6 + bodyBob, 4, 4);
-  ctx.fillRect(16, 6 + bodyBob, 4, 4);
-  // Eye shine
-  ctx.fillStyle = '#39ff14';
-  ctx.fillRect(9, 6 + bodyBob, 2, 2);
-  ctx.fillRect(17, 6 + bodyBob, 2, 2);
-
+  ctx.fillRect(10, 9 + bodyBob, 2, 2);
+  ctx.fillRect(16, 9 + bodyBob, 2, 2);
   // Mouth
-  ctx.fillStyle = '#000';
-  ctx.fillRect(10, 12 + bodyBob, 8, 2);
+  ctx.fillStyle = '#3a1010';
+  ctx.fillRect(12, 13 + bodyBob, 4, 1);
 
-  // Guitar in hands once equipped
+  // ---- Guitar on back when equipped (drawn last so it sits over the body) ----
   if (showGuitar && !player.attacking) {
     ctx.save();
     ctx.translate(15, 27 + bodyBob);
@@ -3475,84 +3700,185 @@ function drawEnemy(e) {
     return;
   }
 
-  ctx.fillStyle = '#ff3333';
-  ctx.fillRect(sx - 12, e.y - 28, 24, 24);
-  ctx.fillStyle = '#aa0000';
-  ctx.fillRect(sx - 14, e.y - 30, 28, 28);
-
-  // Eyes
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(sx - 8, e.y - 22, 6, 6);
-  ctx.fillRect(sx + 2, e.y - 22, 6, 6);
-  ctx.fillStyle = '#000';
-  ctx.fillRect(sx - 6, e.y - 20, 3, 3);
-  ctx.fillRect(sx + 4, e.y - 20, 3, 3);
-
-  // Antenna
-  ctx.fillStyle = '#ff3333';
-  ctx.fillRect(sx - 1, e.y - 38, 2, 10);
-  ctx.fillStyle = '#ffff00';
-  ctx.fillRect(sx - 3, e.y - 40, 6, 6);
+  // Default light-tier ground enemy: humanoid punk goon (replaces the old red square).
+  drawGoon(sx, e.y, e);
 }
 
-function drawBrute(sx, y, e) {
+function drawGoon(sx, y, e) {
   const flash = e.hitFlash > 0;
+  const facing = e.vx >= 0 ? 1 : -1;
+  const walkPhase = Math.floor(Date.now() / 130) % 4;
+  const walkOffset = walkPhase === 1 ? -1 : walkPhase === 3 ? 1 : 0;
   ctx.save();
+
   // Shadow
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
   ctx.beginPath();
-  ctx.ellipse(sx, y + 2, 22, 4, 0, 0, Math.PI * 2);
+  ctx.ellipse(sx, y + 1, 13, 2.5, 0, 0, Math.PI * 2);
   ctx.fill();
-  // Main rusted body - outer shell
-  ctx.fillStyle = flash ? '#ffe8a0' : '#4a2a18';
-  ctx.fillRect(sx - 20, y - 40, 40, 40);
-  // Inner body
-  ctx.fillStyle = flash ? '#ffd060' : '#6b3a22';
-  ctx.fillRect(sx - 18, y - 38, 36, 36);
-  // Rust patches
-  ctx.fillStyle = flash ? '#ffaa44' : '#8a4520';
-  ctx.fillRect(sx - 14, y - 30, 6, 6);
-  ctx.fillRect(sx + 6,  y - 22, 8, 8);
-  ctx.fillRect(sx - 10, y - 12, 10, 4);
-  // Bolts
-  ctx.fillStyle = '#2a1810';
-  ctx.fillRect(sx - 18, y - 38, 3, 3);
-  ctx.fillRect(sx + 15, y - 38, 3, 3);
-  ctx.fillRect(sx - 18, y - 5,  3, 3);
-  ctx.fillRect(sx + 15, y - 5,  3, 3);
-  // Top spikes (stomp deterrent)
-  ctx.fillStyle = '#2a1a12';
+
+  // Legs (ripped jeans, alternating walk cycle)
+  ctx.fillStyle = flash ? '#ffffff' : '#1a1a22';
+  ctx.fillRect(sx - 7, y - 14 + walkOffset, 5, 14 - walkOffset);
+  ctx.fillRect(sx + 2, y - 14 - walkOffset, 5, 14 + walkOffset);
+  // Boots
+  ctx.fillStyle = flash ? '#ffffff' : '#0a0a0e';
+  ctx.fillRect(sx - 8, y - 2, 7, 3);
+  ctx.fillRect(sx + 1, y - 2, 7, 3);
+
+  // Torso (dirty tank top)
+  ctx.fillStyle = flash ? '#ffffff' : '#6a3030';
+  ctx.fillRect(sx - 9, y - 28, 18, 14);
+  // Belt
+  ctx.fillStyle = flash ? '#ffffff' : '#2a1a10';
+  ctx.fillRect(sx - 9, y - 16, 18, 2);
+  // Studded shoulder strap
+  ctx.fillStyle = flash ? '#ffffff' : '#2a1a14';
+  ctx.fillRect(sx - 9, y - 28, 18, 2);
+
+  // Arms swinging opposite to legs
+  ctx.fillStyle = flash ? '#ffffff' : '#c8a080';
+  ctx.fillRect(sx - 12, y - 26 - walkOffset, 4, 12);
+  ctx.fillRect(sx + 8,  y - 26 + walkOffset, 4, 12);
+  // Fists
+  ctx.fillStyle = flash ? '#ffffff' : '#a07858';
+  ctx.fillRect(sx - 12, y - 16 - walkOffset, 4, 3);
+  ctx.fillRect(sx + 8,  y - 16 + walkOffset, 4, 3);
+
+  // Head (skin tone)
+  ctx.fillStyle = flash ? '#ffffff' : '#d8b090';
+  ctx.fillRect(sx - 7, y - 38, 14, 10);
+  // Mohawk spikes
+  ctx.fillStyle = flash ? '#ffffff' : '#c00040';
   for (let i = -2; i <= 2; i++) {
-    const sxi = sx + i * 7;
+    const sxi = sx + i * 3;
     ctx.beginPath();
-    ctx.moveTo(sxi - 3, y - 40);
-    ctx.lineTo(sxi,     y - 48);
-    ctx.lineTo(sxi + 3, y - 40);
+    ctx.moveTo(sxi - 2, y - 38);
+    ctx.lineTo(sxi,     y - 44);
+    ctx.lineTo(sxi + 2, y - 38);
     ctx.closePath();
     ctx.fill();
   }
-  // Glowing eyes
-  ctx.fillStyle = flash ? '#ffffff' : '#7cff50';
-  ctx.fillRect(sx - 10, y - 30, 5, 5);
-  ctx.fillRect(sx + 5,  y - 30, 5, 5);
-  // Eye glow
-  ctx.fillStyle = 'rgba(124, 255, 80, 0.35)';
-  ctx.fillRect(sx - 12, y - 32, 9, 9);
-  ctx.fillRect(sx + 3,  y - 32, 9, 9);
-  // Mouth grill
-  ctx.fillStyle = '#1a0e08';
-  ctx.fillRect(sx - 10, y - 16, 20, 6);
-  ctx.fillStyle = '#4a2e1a';
-  for (let gx = sx - 9; gx < sx + 10; gx += 3) ctx.fillRect(gx, y - 16, 1, 6);
-  // HP bar above head
+  // Eyes (look in facing direction)
+  ctx.fillStyle = flash ? '#ffffff' : '#000';
+  ctx.fillRect(sx - 4 + (facing > 0 ? 1 : -1), y - 33, 2, 2);
+  ctx.fillRect(sx + 2 + (facing > 0 ? 1 : -1), y - 33, 2, 2);
+  // Snarl
+  ctx.fillStyle = flash ? '#ffffff' : '#3a1010';
+  ctx.fillRect(sx - 3, y - 29, 6, 1);
+
+  ctx.restore();
+}
+
+function drawBrute(sx, y, e) {
+  // Hulking human thug. Hitbox stays 40x40 (handled in update); the sprite's
+  // bulky torso & shoulders fill that space. Mid-game roadblock - HP 11, no stomp.
+  const flash = e.hitFlash > 0;
+  const facing = e.vx >= 0 ? 1 : -1;
+  const walkPhase = Math.floor(Date.now() / 160) % 4;
+  const walkOffset = walkPhase === 1 ? -1 : walkPhase === 3 ? 1 : 0;
+  ctx.save();
+
+  // Shadow (wide - he's a heavy guy)
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath();
+  ctx.ellipse(sx, y + 2, 22, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Legs (heavy combat trousers)
+  ctx.fillStyle = flash ? '#ffffff' : '#22241c';
+  ctx.fillRect(sx - 11, y - 18 + walkOffset, 8, 18 - walkOffset);
+  ctx.fillRect(sx + 3,  y - 18 - walkOffset, 8, 18 + walkOffset);
+  // Boots (steel-toed)
+  ctx.fillStyle = flash ? '#ffffff' : '#0a0a0a';
+  ctx.fillRect(sx - 12, y - 2, 10, 3);
+  ctx.fillRect(sx + 2,  y - 2, 10, 3);
+  // Boot caps
+  ctx.fillStyle = flash ? '#ffffff' : '#9a9a9e';
+  ctx.fillRect(sx + (facing > 0 ? 8 : -12), y - 3, 4, 1);
+
+  // Massive torso (leather vest over bare chest)
+  ctx.fillStyle = flash ? '#ffe8a0' : '#3a2618';
+  ctx.fillRect(sx - 18, y - 42, 36, 24);
+  // Bare chest gap (V-neck)
+  ctx.fillStyle = flash ? '#ffd0a0' : '#a06a48';
+  ctx.fillRect(sx - 5, y - 40, 10, 14);
+  // Studs along the vest
+  ctx.fillStyle = flash ? '#ffffff' : '#d8d8e0';
+  ctx.fillRect(sx - 16, y - 40, 2, 2);
+  ctx.fillRect(sx - 16, y - 32, 2, 2);
+  ctx.fillRect(sx - 16, y - 24, 2, 2);
+  ctx.fillRect(sx + 14, y - 40, 2, 2);
+  ctx.fillRect(sx + 14, y - 32, 2, 2);
+  ctx.fillRect(sx + 14, y - 24, 2, 2);
+  // Heavy belt
+  ctx.fillStyle = flash ? '#ffffff' : '#1a1208';
+  ctx.fillRect(sx - 11, y - 20, 22, 3);
+  ctx.fillStyle = flash ? '#ffffff' : '#c8a040';
+  ctx.fillRect(sx - 2, y - 20, 4, 3);
+
+  // Huge arms (bulging biceps)
+  ctx.fillStyle = flash ? '#ffd0a0' : '#a06a48';
+  ctx.fillRect(sx - 23, y - 40, 6, 18);
+  ctx.fillRect(sx + 17, y - 40, 6, 18);
+  // Forearms (knuckle-wrapped)
+  ctx.fillStyle = flash ? '#ffffff' : '#5a4030';
+  ctx.fillRect(sx - 24, y - 22, 7, 4);
+  ctx.fillRect(sx + 17, y - 22, 7, 4);
+  // Massive fists
+  ctx.fillStyle = flash ? '#ffffff' : '#80583a';
+  ctx.fillRect(sx - 25, y - 18, 8, 6);
+  ctx.fillRect(sx + 17, y - 18, 8, 6);
+  // Tattoo bands on biceps
+  ctx.fillStyle = flash ? '#ffffff' : '#1a0a0a';
+  ctx.fillRect(sx - 23, y - 33, 6, 1);
+  ctx.fillRect(sx + 17, y - 33, 6, 1);
+
+  // Thick neck
+  ctx.fillStyle = flash ? '#ffd0a0' : '#a06a48';
+  ctx.fillRect(sx - 6, y - 46, 12, 5);
+
+  // Head (square jaw, scarred)
+  ctx.fillStyle = flash ? '#ffd0a0' : '#b87858';
+  ctx.fillRect(sx - 10, y - 58, 20, 14);
+  // Stubble / shadow on jaw
+  ctx.fillStyle = flash ? '#ffffff' : '#6a4030';
+  ctx.fillRect(sx - 10, y - 47, 20, 2);
+  // Bald top with scar
+  ctx.fillStyle = flash ? '#ffffff' : '#a06848';
+  ctx.fillRect(sx - 10, y - 60, 20, 4);
+  ctx.fillStyle = flash ? '#ffffff' : '#5a2010';
+  ctx.fillRect(sx - 4, y - 60, 1, 6);
+  // Cauliflower ear
+  ctx.fillStyle = flash ? '#ffffff' : '#8a4030';
+  ctx.fillRect(sx + (facing > 0 ? 10 : -12), y - 54, 2, 5);
+  // Heavy brow
+  ctx.fillStyle = flash ? '#ffffff' : '#3a1810';
+  ctx.fillRect(sx - 10, y - 53, 20, 2);
+  // Glaring eyes (red-tinted, angry)
+  ctx.fillStyle = flash ? '#ffffff' : '#ffeacc';
+  ctx.fillRect(sx - 7 + (facing > 0 ? 1 : -1), y - 50, 4, 3);
+  ctx.fillRect(sx + 3 + (facing > 0 ? 1 : -1), y - 50, 4, 3);
+  ctx.fillStyle = flash ? '#ffffff' : '#a02020';
+  ctx.fillRect(sx - 6 + (facing > 0 ? 1 : -1), y - 49, 2, 2);
+  ctx.fillRect(sx + 4 + (facing > 0 ? 1 : -1), y - 49, 2, 2);
+  // Snarl / clenched teeth
+  ctx.fillStyle = flash ? '#ffffff' : '#1a0808';
+  ctx.fillRect(sx - 6, y - 44, 12, 2);
+  ctx.fillStyle = flash ? '#ffffff' : '#e8d8c0';
+  ctx.fillRect(sx - 5, y - 43, 2, 1);
+  ctx.fillRect(sx - 1, y - 43, 2, 1);
+  ctx.fillRect(sx + 3, y - 43, 2, 1);
+
+  // HP bar above head (kept identical to legacy brute placement).
   const hpRatio = Math.max(0, e.hp / e.maxHp);
   ctx.fillStyle = '#220808';
-  ctx.fillRect(sx - 18, y - 56, 36, 4);
+  ctx.fillRect(sx - 18, y - 70, 36, 4);
   ctx.fillStyle = hpRatio > 0.5 ? '#7cff50' : (hpRatio > 0.25 ? '#ffcc00' : '#ff3333');
-  ctx.fillRect(sx - 18, y - 56, 36 * hpRatio, 4);
+  ctx.fillRect(sx - 18, y - 70, 36 * hpRatio, 4);
   ctx.strokeStyle = '#000';
   ctx.lineWidth = 1;
-  ctx.strokeRect(sx - 18.5, y - 56.5, 37, 5);
+  ctx.strokeRect(sx - 18.5, y - 70.5, 37, 5);
   ctx.restore();
 }
 
@@ -4239,7 +4565,7 @@ function drawBossHPBar() {
   ctx.shadowBlur = 8;
   ctx.fillStyle = '#ffee66';
   ctx.font = 'bold 13px Consolas, "Courier New", monospace';
-  ctx.fillText('MEGA-CORP TITAN', x, y - 6);
+  ctx.fillText('МЕГА-КОРП ТИТАН', x, y - 6);
   ctx.restore();
 
   // Bar backdrop
@@ -4500,7 +4826,7 @@ function drawJunkyardBackground() {
     // Graffiti tag
     ctx.fillStyle = '#39ff14';
     ctx.font = 'bold 10px Consolas, "Courier New", monospace';
-    ctx.fillText('PUNK', bx + 18, by + bh / 2 + 4);
+    ctx.fillText('ЧИКИ', bx + 18, by + bh / 2 + 4);
   }
 
   // Burning barrels with smoke
@@ -5108,32 +5434,47 @@ function drawPedalUnderPlayer() {
   ctx.ellipse(0, 8, 28, 5, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Chassis
+  // Chassis - prefer the distortion-pedal sprite; fall back to procedural rect
+  // art if the image isn't loaded yet (so the visual never fully disappears).
   const chassisW = 44, chassisH = 22;
-  ctx.fillStyle = '#1a1a22';
-  ctx.fillRect(-chassisW / 2, -chassisH, chassisW, chassisH);
-  ctx.fillStyle = '#3a0f28';
-  ctx.fillRect(-chassisW / 2, -chassisH, chassisW, 4);
-  // Label strip
-  ctx.fillStyle = '#ff2aa0';
-  ctx.fillRect(-chassisW / 2 + 4, -chassisH + 7, chassisW - 8, 3);
-  // LED (flashes brighter on stomp)
   const stomp = (tt > 0.2 && tt < 0.35) || (tt > 0.65 && tt < 0.8);
-  ctx.fillStyle = stomp ? '#ffff66' : '#9a2d2d';
-  ctx.fillRect(chassisW / 2 - 9, -chassisH + 14, 4, 4);
-
-  // Footswitch (pressed-down pose during stomp windows)
-  const pressed = stomp;
-  const footSize = pressed ? 10 : 14;
-  const footY = pressed ? -chassisH + 3 : -chassisH - 4;
-  ctx.fillStyle = '#e0e0e0';
-  ctx.beginPath();
-  ctx.arc(0, footY, footSize / 2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#9a9a9a';
-  ctx.beginPath();
-  ctx.arc(0, footY, footSize / 2 - 3, 0, Math.PI * 2);
-  ctx.fill();
+  // Prefer the dedicated stomp sprite; fall back to the default distortion
+  // sprite if -2.png is missing, then to procedural rect art if neither is ready.
+  const stompImg = equipmentImages.distortionStomp;
+  const pedalImg = (stompImg && stompImg.complete && stompImg.naturalWidth > 0)
+    ? stompImg
+    : equipmentImages.distortion;
+  if (pedalImg && pedalImg.complete && pedalImg.naturalWidth > 0) {
+    // Preserve aspect, fit into a slightly larger footprint than the procedural
+    // chassis so the sprite reads at small sizes.
+    const targetW = 56;
+    const ratio = pedalImg.naturalHeight / pedalImg.naturalWidth;
+    const drawW = targetW;
+    const drawH = targetW * ratio;
+    // Subtle squish on stomp impact for a bit of feedback.
+    const squish = stomp ? 0.92 : 1;
+    ctx.drawImage(pedalImg, -drawW / 2, -drawH * squish, drawW, drawH * squish);
+  } else {
+    ctx.fillStyle = '#1a1a22';
+    ctx.fillRect(-chassisW / 2, -chassisH, chassisW, chassisH);
+    ctx.fillStyle = '#3a0f28';
+    ctx.fillRect(-chassisW / 2, -chassisH, chassisW, 4);
+    ctx.fillStyle = '#ff2aa0';
+    ctx.fillRect(-chassisW / 2 + 4, -chassisH + 7, chassisW - 8, 3);
+    ctx.fillStyle = stomp ? '#ffff66' : '#9a2d2d';
+    ctx.fillRect(chassisW / 2 - 9, -chassisH + 14, 4, 4);
+    const pressed = stomp;
+    const footSize = pressed ? 10 : 14;
+    const footY = pressed ? -chassisH + 3 : -chassisH - 4;
+    ctx.fillStyle = '#e0e0e0';
+    ctx.beginPath();
+    ctx.arc(0, footY, footSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#9a9a9a';
+    ctx.beginPath();
+    ctx.arc(0, footY, footSize / 2 - 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // Stomping boot overlay - appears from above and slams down on the switch.
   const bootProgress = tt < 0.5
@@ -5210,17 +5551,27 @@ function drawRewardPickups() {
       ctx.fillRect(sx - 6, sy - 5, 2, 2);
       ctx.fillRect(sx + 4, sy - 5, 2, 2);
     } else {
-      // Pedal icon - mini chassis with magenta label and footswitch
-      ctx.fillStyle = '#1a1a22';
-      ctx.fillRect(sx - 11, sy - 7, 22, 14);
-      ctx.fillStyle = '#ff2aa0';
-      ctx.fillRect(sx - 9, sy - 4, 18, 3);
-      ctx.fillStyle = '#ffee66';
-      ctx.fillRect(sx + 6, sy + 1, 2, 2);
-      ctx.fillStyle = '#e0e0e0';
-      ctx.beginPath();
-      ctx.arc(sx - 3, sy + 2, 3, 0, Math.PI * 2);
-      ctx.fill();
+      // Pedal pickup - prefer the distortion-pedal sprite (with procedural
+      // fallback while the image is still loading).
+      const pImg = equipmentImages.distortion;
+      if (pImg && pImg.complete && pImg.naturalWidth > 0) {
+        const targetW = 30;
+        const ratio = pImg.naturalHeight / pImg.naturalWidth;
+        const dw = targetW;
+        const dh = targetW * ratio;
+        ctx.drawImage(pImg, sx - dw / 2, sy - dh / 2, dw, dh);
+      } else {
+        ctx.fillStyle = '#1a1a22';
+        ctx.fillRect(sx - 11, sy - 7, 22, 14);
+        ctx.fillStyle = '#ff2aa0';
+        ctx.fillRect(sx - 9, sy - 4, 18, 3);
+        ctx.fillStyle = '#ffee66';
+        ctx.fillRect(sx + 6, sy + 1, 2, 2);
+        ctx.fillStyle = '#e0e0e0';
+        ctx.beginPath();
+        ctx.arc(sx - 3, sy + 2, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 }
@@ -5241,21 +5592,21 @@ function drawHUD() {
 
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-  ctx.fillText('SCORE', 20, 14);
+  ctx.fillText('ОЧКИ', 20, 14);
   ctx.fillStyle = UI.primary;
   ctx.font = 'bold 18px Consolas, "Courier New", monospace';
   ctx.fillText(score.toString().padStart(5, '0'), 20, 28);
 
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-  ctx.fillText('BEER', 96, 14);
+  ctx.fillText('ПИВО', 96, 14);
   ctx.fillStyle = UI.accent;
   ctx.font = 'bold 18px Consolas, "Courier New", monospace';
   ctx.fillText(totalBeer.toString().padStart(4, '0'), 96, 28);
 
   ctx.fillStyle = player.hasGuitar ? UI.secondary : UI.textDim;
   ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-  ctx.fillText(player.hasGuitar ? 'GEAR' : 'NO GUITAR', 180, 14);
+  ctx.fillText(player.hasGuitar ? 'ОРУЖИЕ' : 'БЕЗ ГИТАРЫ', 180, 14);
   ctx.font = 'bold 16px Consolas, "Courier New", monospace';
   if (player.hasGuitar) {
     const g = guitarTypes[player.guitarType];
@@ -5263,24 +5614,24 @@ function drawHUD() {
     ctx.fillText(g.name.toUpperCase(), 180, 28);
     ctx.fillStyle = UI.textDim;
     ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-    ctx.fillText('E / X ATTACK', 322, 30);
+    ctx.fillText('E / X АТАКА', 322, 30);
   } else {
     ctx.fillStyle = UI.textDim;
     ctx.font = 'bold 13px Consolas, "Courier New", monospace';
-    ctx.fillText('VISIT SHOP FOR A GUITAR', 180, 30);
+    ctx.fillText('КУПИ ГИТАРУ В МАГАЗИНЕ', 180, 30);
   }
 
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-  ctx.fillText('LEVEL ' + currentLevel + ' / ' + TOTAL_LEVELS, 442, 14);
+  ctx.fillText('УРОВЕНЬ ' + currentLevel + ' / ' + TOTAL_LEVELS, 442, 14);
   ctx.fillStyle = UI.accent;
   ctx.font = 'bold 16px Consolas, "Courier New", monospace';
-  const levelName = (LEVEL_NAMES[currentLevel] || 'STAGE ' + currentLevel).toUpperCase();
+  const levelName = (LEVEL_NAMES[currentLevel] || 'ЭТАП ' + currentLevel).toUpperCase();
   ctx.fillText(levelName, 442, 28);
 
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-  ctx.fillText('LIVES', 626, 14);
+  ctx.fillText('ЖИЗНИ', 626, 14);
   // Draw up to MAX_LIVES hearts. When the player has collected bonus hearts
   // beyond the usual 3, the extra slots appear; unfilled slots stay empty.
   // Hearts shrink slightly when displaying more than 3 so they still fit.
@@ -5317,20 +5668,28 @@ function drawHUD() {
     ctx.strokeRect(UI_W - 220, stripY, 220, stripH);
     ctx.fillStyle = '#ff2aa0';
     ctx.font = 'bold 10px Consolas, "Courier New", monospace';
-    ctx.fillText('DISTORTION PEDAL  [F]', UI_W - 214, stripY + 6);
+    ctx.fillText('ПЕДАЛЬ ДИСТОРШНА  [F]', UI_W - 214, stripY + 6);
     // Mini pedal icons for each available charge; the top-of-stack one fades
     // while the cooldown is running so the player gets visual feedback.
+    const pedalImg = equipmentImages.distortion;
+    const useSprite = pedalImg && pedalImg.complete && pedalImg.naturalWidth > 0;
     for (let i = 0; i < MAX_PEDAL_CHARGES; i++) {
       const px = UI_W - 94 + i * 14;
       const py = stripY + 6;
       const filled = i < player.pedalCharges;
       const cooldownFade = filled && (i === player.pedalCharges - 1) && player.pedalCooldown > 0;
       ctx.globalAlpha = filled ? (cooldownFade ? 0.35 : 1) : 0.28;
-      ctx.fillStyle = filled ? '#ff2aa0' : '#3a1020';
-      ctx.fillRect(px, py, 10, 7);
-      if (filled) {
-        ctx.fillStyle = '#ffee66';
-        ctx.fillRect(px + 7, py + 2, 2, 2);
+      if (useSprite) {
+        const dw = 12;
+        const dh = dw * (pedalImg.naturalHeight / pedalImg.naturalWidth);
+        ctx.drawImage(pedalImg, px - 1, py - Math.max(0, dh - 8), dw, dh);
+      } else {
+        ctx.fillStyle = filled ? '#ff2aa0' : '#3a1020';
+        ctx.fillRect(px, py, 10, 7);
+        if (filled) {
+          ctx.fillStyle = '#ffee66';
+          ctx.fillRect(px + 7, py + 2, 2, 2);
+        }
       }
       ctx.globalAlpha = 1;
     }
@@ -5465,10 +5824,10 @@ function drawShopItem(i, x, y, cardH) {
   // Price / owned / equipped. Free reward guitars (price 0) show FREE instead
   // of "0 BEER" so the unlock reads as a trophy rather than pocket change.
   let statusText, statusColor;
-  if (equipped) { statusText = 'EQUIPPED'; statusColor = UI.secondary; }
-  else if (owned) { statusText = 'OWNED'; statusColor = UI.success; }
-  else if (g.price === 0) { statusText = 'FREE - EARNED'; statusColor = UI.accent; }
-  else { statusText = g.price + ' BEER'; statusColor = canAfford ? UI.accent : UI.danger; }
+  if (equipped) { statusText = 'НА РУКАХ'; statusColor = UI.secondary; }
+  else if (owned) { statusText = 'ЕСТЬ'; statusColor = UI.success; }
+  else if (g.price === 0) { statusText = 'БЕСПЛАТНО — ЗАСЛУЖЕНО'; statusColor = UI.accent; }
+  else { statusText = g.price + ' ПИВО'; statusColor = canAfford ? UI.accent : UI.danger; }
   ctx.fillStyle = statusColor;
   ctx.font = 'bold 11px Consolas, "Courier New", monospace';
   ctx.fillText(statusText, x + 28, statusY);
@@ -5476,7 +5835,7 @@ function drawShopItem(i, x, y, cardH) {
   // Damage stat
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-  const dmgText = 'DMG ' + g.damage;
+  const dmgText = 'УРОН ' + g.damage;
   ctx.fillText(dmgText, x + cardW - 14 - ctx.measureText(dmgText).width, dmgY);
 
   // Don't register card interactions while the confirmation dialog is open so the
@@ -5505,14 +5864,14 @@ function drawShop() {
   // Title
   ctx.fillStyle = UI.primary;
   ctx.font = 'bold 28px Arial';
-  const shopTitle = 'GUITAR SHOP';
+  const shopTitle = 'МАГАЗИН ГИТАР';
   const shopTitleWidth = ctx.measureText(shopTitle).width;
   ctx.fillText(shopTitle, 400 - shopTitleWidth / 2, 35);
 
   // Currently equipped guitar (top-left indicator)
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-  ctx.fillText('EQUIPPED', 20, 20);
+  ctx.fillText('НА РУКАХ', 20, 20);
   if (player.hasGuitar) {
     const eq = guitarTypes[player.guitarType];
     // Color swatch
@@ -5524,24 +5883,24 @@ function drawShop() {
     ctx.fillText(eq.name.toUpperCase(), 34, 45);
     ctx.fillStyle = UI.textDim;
     ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-    ctx.fillText('DMG ' + eq.damage, 34, 60);
+    ctx.fillText('УРОН ' + eq.damage, 34, 60);
   } else {
     ctx.fillStyle = UI.danger;
     ctx.font = 'bold 14px Consolas, "Courier New", monospace';
-    ctx.fillText('NONE - BARE HANDS', 20, 50);
+    ctx.fillText('НИЧЕГО — ГОЛЫЕ РУКИ', 20, 50);
   }
 
   // Beer balance
   ctx.fillStyle = UI.accent;
   ctx.font = 'bold 20px Arial';
-  const beerText = 'BEER ' + totalBeer;
+  const beerText = 'ПИВО ' + totalBeer;
   const beerTextWidth = ctx.measureText(beerText).width;
   ctx.fillText(beerText, 760 - beerTextWidth, 35);
 
   // Preview section
   ctx.fillStyle = UI.textDim;
   ctx.font = '12px Consolas, "Courier New", monospace';
-  const previewLabel = 'PREVIEW';
+  const previewLabel = 'ПРОСМОТР';
   const previewLabelWidth = ctx.measureText(previewLabel).width;
   ctx.fillText(previewLabel, 400 - previewLabelWidth / 2, 100);
 
@@ -5570,7 +5929,7 @@ function drawShop() {
   ctx.fillText(previewName, 400 - ctx.measureText(previewName).width / 2, 245);
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 13px Consolas, "Courier New", monospace';
-  const previewDmg = 'DMG ' + prevGuitar.damage;
+  const previewDmg = 'УРОН ' + prevGuitar.damage;
   ctx.fillText(previewDmg, 400 - ctx.measureText(previewDmg).width / 2, 265);
 
   // Auto-compact when more than 3 rows of guitars exist (e.g. after unlocking
@@ -5586,7 +5945,7 @@ function drawShop() {
   // Guitar list header
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 14px Arial';
-  const listTitle = 'AVAILABLE GUITARS';
+  const listTitle = 'ДОСТУПНЫЕ ГИТАРЫ';
   const listTitleWidth = ctx.measureText(listTitle).width;
   ctx.fillText(listTitle, 400 - listTitleWidth / 2, listTitleY);
 
@@ -5615,10 +5974,10 @@ function drawShop() {
     ctx.fillStyle = UI.text;
     ctx.font = 'bold 16px Consolas, "Courier New", monospace';
     let confirmText;
-    if (shopConfirmMode === 'proceed') confirmText = 'HEAD OUT TO LEVEL ' + currentLevel + '?';
-    else if (shopConfirmMode === 'replay') confirmText = 'REPLAY LEVEL ' + lastCompletedLevel + '?';
-    else if (shopConfirmMode === 'equip') confirmText = 'EQUIP THIS GUITAR?';
-    else confirmText = 'BUY THIS GUITAR?';
+    if (shopConfirmMode === 'proceed') confirmText = 'ИДЁМ НА УРОВЕНЬ ' + currentLevel + '?';
+    else if (shopConfirmMode === 'replay') confirmText = 'ПЕРЕИГРАТЬ УРОВЕНЬ ' + lastCompletedLevel + '?';
+    else if (shopConfirmMode === 'equip') confirmText = 'ВЗЯТЬ ЭТУ ГИТАРУ?';
+    else confirmText = 'КУПИТЬ ЭТУ ГИТАРУ?';
     ctx.fillText(confirmText, 400 - ctx.measureText(confirmText).width / 2, dialogY + 30);
 
     if (shopConfirmMode === 'proceed' || shopConfirmMode === 'replay') {
@@ -5626,12 +5985,12 @@ function drawShop() {
       ctx.font = 'bold 12px Consolas, "Courier New", monospace';
       if (shopConfirmMode === 'replay') {
         ctx.fillStyle = UI.accent;
-        const info = 'FARM MORE BEER - KEEP WHAT YOU EARN';
+        const info = 'НАФАРМИ ЕЩЁ ПИВА — ВСЁ ОСТАНЕТСЯ';
         ctx.fillText(info, 400 - ctx.measureText(info).width / 2, dialogY + 58);
       } else {
         const info = player.hasGuitar
-          ? 'EQUIPPED: ' + guitarTypes[player.guitarType].name.toUpperCase()
-          : 'WARNING: NO GUITAR EQUIPPED';
+          ? 'НА РУКАХ: ' + guitarTypes[player.guitarType].name.toUpperCase()
+          : 'ВНИМАНИЕ: ГИТАРЫ НЕТ';
         ctx.fillStyle = player.hasGuitar ? UI.secondary : UI.danger;
         ctx.fillText(info, 400 - ctx.measureText(info).width / 2, dialogY + 58);
       }
@@ -5640,12 +5999,12 @@ function drawShop() {
       ctx.fillStyle = g.color;
       ctx.font = 'bold 13px Consolas, "Courier New", monospace';
       const guitarName = shopConfirmMode === 'equip'
-        ? g.name.toUpperCase() + ' - FREE'
-        : g.name.toUpperCase() + ' - ' + g.price + ' BEER';
+        ? g.name.toUpperCase() + ' — БЕСПЛАТНО'
+        : g.name.toUpperCase() + ' — ' + g.price + ' ПИВА';
       ctx.fillText(guitarName, 400 - ctx.measureText(guitarName).width / 2, dialogY + 54);
       ctx.fillStyle = UI.textDim;
       ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-      const balance = 'BALANCE AFTER: ' + (shopConfirmMode === 'buy' ? (totalBeer - g.price) : totalBeer) + ' BEER';
+      const balance = 'ОСТАНЕТСЯ: ' + (shopConfirmMode === 'buy' ? (totalBeer - g.price) : totalBeer) + ' ПИВА';
       ctx.fillText(balance, 400 - ctx.measureText(balance).width / 2, dialogY + 72);
     }
 
@@ -5658,10 +6017,10 @@ function drawShop() {
     const yesX = 400 - totalButtonsWidth / 2;
     const noX = yesX + buttonW + buttonGap;
 
-    let yesLabel = 'YES';
-    let noLabel = 'NO';
-    if (shopConfirmMode === 'proceed') { yesLabel = 'GO';     noLabel = 'STAY'; }
-    if (shopConfirmMode === 'replay')  { yesLabel = 'REPLAY'; noLabel = 'CANCEL'; }
+    let yesLabel = 'ДА';
+    let noLabel = 'НЕТ';
+    if (shopConfirmMode === 'proceed') { yesLabel = 'ВПЕРЁД'; noLabel = 'ОСТАТЬСЯ'; }
+    if (shopConfirmMode === 'replay')  { yesLabel = 'ЗАНОВО';  noLabel = 'ОТМЕНА'; }
 
     // Yes button
     const yesFill = shopConfirmSelection === 0 ? UI.primary : UI.panelBg;
@@ -5719,7 +6078,7 @@ function drawShop() {
     }
     ctx.fillStyle = UI.accent;
     ctx.font = 'bold 13px Consolas, "Courier New", monospace';
-    const replayLabel = 'REPLAY LVL ' + lastCompletedLevel + '  [R]';
+    const replayLabel = 'ПЕРЕИГРАТЬ ' + lastCompletedLevel + '  [R]';
     ctx.fillText(replayLabel, replayX + replayW / 2 - ctx.measureText(replayLabel).width / 2, btnY + 18);
     addInteractiveRegion(replayX, btnY, replayW, btnH, () => {
       openReplayConfirm(false);
@@ -5743,7 +6102,7 @@ function drawShop() {
     }
     ctx.fillStyle = UI.primary;
     ctx.font = 'bold 13px Consolas, "Courier New", monospace';
-    const nextLabel = 'NEXT LVL ' + currentLevel + '  [SPACE]';
+    const nextLabel = 'ДАЛЕЕ — УРОВЕНЬ ' + currentLevel + '  [SPACE]';
     ctx.fillText(nextLabel, nextX + nextW / 2 - ctx.measureText(nextLabel).width / 2, btnY + 18);
     addInteractiveRegion(nextX, btnY, nextW, btnH, () => {
       audioCtx.resume();
@@ -5758,8 +6117,8 @@ function drawShop() {
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 10px Consolas, "Courier New", monospace';
   const hint = footerFocused
-    ? 'LEFT / RIGHT: CHOOSE   //   E / ENTER / A: CONFIRM'
-    : 'E / ENTER: SELECT GUITAR   //   DOWN: REPLAY / NEXT';
+    ? '← / → ВЫБОР   //   E / ENTER / A ОК'
+    : 'E / ENTER — ВЫБРАТЬ ГИТАРУ   //   ↓ — ПЕРЕИГРАТЬ / ДАЛЕЕ';
   ctx.fillText(hint, 400 - ctx.measureText(hint).width / 2, btnY + 17);
 }
 
@@ -5953,14 +6312,14 @@ function drawReceipt() {
   // Receipt title
   ctx.fillStyle = '#8b6914';
   ctx.font = 'bold 20px Consolas, "Courier New", monospace';
-  const receiptTitle = '~~~ PUNK SHOP RECEIPT ~~~';
+  const receiptTitle = '~~~ ЧЕК ПАНК-МАГАЗИНА ~~~';
   const receiptTitleWidth = ctx.measureText(receiptTitle).width;
   ctx.fillText(receiptTitle, 400 - receiptTitleWidth / 2, 60);
 
   // Transaction ID & date
   ctx.font = '12px Consolas, "Courier New", monospace';
   ctx.fillStyle = '#333';
-  const txnId = 'TXN: #' + Math.floor(Math.random() * 100000).toString().padStart(5, '0');
+  const txnId = 'ЧЕК №' + Math.floor(Math.random() * 100000).toString().padStart(5, '0');
   const txnIdWidth = ctx.measureText(txnId).width;
   ctx.fillText(txnId, 400 - txnIdWidth / 2, 80);
   
@@ -5975,10 +6334,10 @@ function drawReceipt() {
   // Items header
   ctx.fillStyle = '#333';
   ctx.font = 'bold 13px Consolas, "Courier New", monospace';
-  ctx.fillText('ITEM', 140, 130);
-  ctx.fillText('QTY', 380, 130);
-  ctx.fillText('PRICE', 450, 130);
-  ctx.fillText('TOTAL', 530, 130);
+  ctx.fillText('ТОВАР', 140, 130);
+  ctx.fillText('КОЛ-ВО', 380, 130);
+  ctx.fillText('ЦЕНА', 450, 130);
+  ctx.fillText('ИТОГО', 530, 130);
 
   // Items list
   ctx.font = '12px Consolas, "Courier New", monospace';
@@ -6017,7 +6376,7 @@ function drawReceipt() {
   // Subtotal
   ctx.fillStyle = '#333';
   ctx.font = '13px Consolas, "Courier New", monospace';
-  ctx.fillText('Subtotal:', 380, yPos);
+  ctx.fillText('Подытог:', 380, yPos);
   ctx.fillStyle = '#8b6914';
   ctx.fillText(grandTotal + '¢', 520, yPos);
   yPos += 22;
@@ -6025,7 +6384,7 @@ function drawReceipt() {
   // Tax (10%)
   const tax = Math.floor(grandTotal * 0.1);
   ctx.fillStyle = '#333';
-  ctx.fillText('Tax (10%):', 380, yPos);
+  ctx.fillText('Налог (10%):', 380, yPos);
   ctx.fillStyle = '#8b6914';
   ctx.fillText(tax + '¢', 520, yPos);
   yPos += 22;
@@ -6039,12 +6398,12 @@ function drawReceipt() {
   ctx.fillStyle = '#8b6914';
   ctx.font = 'bold 16px Consolas, "Courier New", monospace';
   const finalTotal = grandTotal + tax;
-  ctx.fillText('TOTAL: ' + finalTotal + '¢', 450, yPos);
+  ctx.fillText('ИТОГО: ' + finalTotal + '¢', 450, yPos);
 
   // Footer message
   ctx.fillStyle = '#666';
   ctx.font = '11px Consolas, "Courier New", monospace';
-  const thanks = 'Thank you for your punk!';
+  const thanks = 'Спасибо за ваш панк!';
   const thanksWidth = ctx.measureText(thanks).width;
   ctx.fillText(thanks, 400 - thanksWidth / 2, 410);
 
@@ -6052,9 +6411,105 @@ function drawReceipt() {
   const blinkAlpha = Math.abs(Math.sin(receiptTimer * 0.05));
   ctx.fillStyle = 'rgba(139, 105, 20, ' + (0.3 + blinkAlpha * 0.4) + ')';
   ctx.font = '11px Consolas, "Courier New", monospace';
-  const continueText = '[PRESS SPACE / A to continue]';
+  const continueText = '[ЖМИ SPACE / A — дальше]';
   const continueWidth = ctx.measureText(continueText).width;
   ctx.fillText(continueText, 400 - continueWidth / 2, 435);
+}
+
+// Minimalist cyberpunk backdrop for the start screen: deep near-black field,
+// sparse low-alpha grid, subtle CRT scan-lines, a single slow-scrolling
+// horizontal data-line, soft cyan/magenta corner glows, vignette, and HUD-style
+// corner brackets. No busy ornaments - the focus is the character preview.
+function drawCyberpunkBackdrop() {
+  const t = Date.now() / 1000;
+
+  // ---- Deep base ----
+  ctx.fillStyle = '#06070d';
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  // ---- Subtle vertical tint (cyan top, magenta bottom) ----
+  const tint = ctx.createLinearGradient(0, 0, 0, GAME_H);
+  tint.addColorStop(0,   'rgba(0, 240, 255, 0.045)');
+  tint.addColorStop(0.5, 'rgba(0, 0, 0, 0)');
+  tint.addColorStop(1,   'rgba(255, 43, 216, 0.05)');
+  ctx.fillStyle = tint;
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  // ---- Static grid (very low alpha, no animation - keeps it minimalist) ----
+  ctx.strokeStyle = 'rgba(0, 240, 255, 0.055)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= GAME_W; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, GAME_H);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= GAME_H; y += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(GAME_W, y + 0.5);
+    ctx.stroke();
+  }
+
+  // ---- Soft corner glows: cyan top-left, magenta bottom-right ----
+  const cg1 = ctx.createRadialGradient(0, 0, 0, 0, 0, 360);
+  cg1.addColorStop(0, 'rgba(0, 240, 255, 0.22)');
+  cg1.addColorStop(1, 'rgba(0, 240, 255, 0)');
+  ctx.fillStyle = cg1;
+  ctx.fillRect(0, 0, 360, 360);
+
+  const cg2 = ctx.createRadialGradient(GAME_W, GAME_H, 0, GAME_W, GAME_H, 380);
+  cg2.addColorStop(0, 'rgba(255, 43, 216, 0.18)');
+  cg2.addColorStop(1, 'rgba(255, 43, 216, 0)');
+  ctx.fillStyle = cg2;
+  ctx.fillRect(GAME_W - 380, GAME_H - 380, 380, 380);
+
+  // ---- Single slow-scrolling cyan data line (horizontal, glowing edges) ----
+  const lineY = ((t * 28) % (GAME_H + 80)) - 40;
+  const dataGrad = ctx.createLinearGradient(0, 0, GAME_W, 0);
+  dataGrad.addColorStop(0,    'rgba(0, 240, 255, 0)');
+  dataGrad.addColorStop(0.5,  'rgba(0, 240, 255, 0.45)');
+  dataGrad.addColorStop(1,    'rgba(0, 240, 255, 0)');
+  ctx.fillStyle = dataGrad;
+  ctx.fillRect(0, lineY, GAME_W, 1);
+  ctx.fillStyle = 'rgba(0, 240, 255, 0.08)';
+  ctx.fillRect(0, lineY - 1, GAME_W, 3);
+
+  // ---- CRT scan-lines (every 3rd row, very faint - reads as monitor texture) ----
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.16)';
+  for (let y = 0; y < GAME_H; y += 3) ctx.fillRect(0, y, GAME_W, 1);
+
+  // ---- Vignette (focus pulled to center) ----
+  const vg = ctx.createRadialGradient(GAME_W / 2, GAME_H / 2, GAME_W * 0.32,
+                                       GAME_W / 2, GAME_H / 2, GAME_W * 0.72);
+  vg.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  vg.addColorStop(1, 'rgba(0, 0, 0, 0.6)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  // ---- HUD corner brackets (cyan top, magenta bottom) ----
+  const bs = 22, m = 14;
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(0, 240, 255, 0.85)';
+  // top-left
+  ctx.beginPath();
+  ctx.moveTo(m, m + bs); ctx.lineTo(m, m); ctx.lineTo(m + bs, m); ctx.stroke();
+  // top-right
+  ctx.beginPath();
+  ctx.moveTo(GAME_W - m - bs, m); ctx.lineTo(GAME_W - m, m); ctx.lineTo(GAME_W - m, m + bs); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255, 43, 216, 0.85)';
+  // bottom-left
+  ctx.beginPath();
+  ctx.moveTo(m, GAME_H - m - bs); ctx.lineTo(m, GAME_H - m); ctx.lineTo(m + bs, GAME_H - m); ctx.stroke();
+  // bottom-right
+  ctx.beginPath();
+  ctx.moveTo(GAME_W - m - bs, GAME_H - m); ctx.lineTo(GAME_W - m, GAME_H - m); ctx.lineTo(GAME_W - m, GAME_H - m - bs); ctx.stroke();
+
+  // ---- Tiny status tag in top-right ----
+  ctx.fillStyle = 'rgba(0, 240, 255, 0.55)';
+  ctx.font = 'bold 8px Consolas, "Courier New", monospace';
+  const tag = 'SYS://ONLINE';
+  ctx.fillText(tag, GAME_W - m - bs - ctx.measureText(tag).width - 6, m + 8);
 }
 
 function draw() {
@@ -6068,159 +6523,322 @@ function draw() {
   clearInteractiveRegions();
 
   if (gameState === 'start') {
-    ctx.fillStyle = UI.bg;
-    ctx.fillRect(0, 0, GAME_W, GAME_H);
+    drawCyberpunkBackdrop();
     pushUITransform();
 
-    ctx.fillStyle = 'rgba(57, 255, 20, 0.08)';
-    for (let i = 0; i < 12; i++) {
-      ctx.fillRect(36 + i * 62, 42 + (i % 3) * 20, 26, 4);
-    }
+    // ---- Minimal section divider line between title and content ----
+    // No bordered "main panel" anymore - the HUD-style corner brackets and
+    // vignette frame the screen, leaving the layout clean and breathable.
+    ctx.fillStyle = 'rgba(0, 240, 255, 0.18)';
+    ctx.fillRect(58, 200, 684, 1);
 
-    drawRoundedRect(38, 42, 724, 420, 18, 'rgba(12, 10, 18, 0.94)', UI.border);
-    drawPanel(58, 68, 300, 336, 'rgba(255,255,255,0.08)', 'rgba(14, 14, 22, 0.98)');
-    drawPanel(378, 68, 364, 336, 'rgba(255,255,255,0.08)', 'rgba(16, 14, 24, 0.98)');
-
-    ctx.fillStyle = UI.primary;
-    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-    const leftKicker = 'CREATE YOUR PUNK';
-    ctx.fillText(leftKicker, 82, 92);
-
-    ctx.fillStyle = UI.text;
-    ctx.font = 'bold 40px Consolas, "Courier New", monospace';
-    ctx.fillText('PUNK', 80, 128);
-    ctx.fillStyle = UI.secondary;
-    ctx.fillText('PLATFORMER', 80, 170);
-
-    ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 12px Consolas, "Courier New", monospace';
-    const leftSub1 = 'BUILD A LOOK. HIT PLAY.';
-    const leftSub2 = 'GRAB BEER. SMASH ROBOTS.';
-    ctx.fillText(leftSub1, 82, 206);
-    ctx.fillText(leftSub2, 82, 224);
-
-    drawPanel(106, 236, 204, 116, 'rgba(255,255,255,0.08)', 'rgba(20, 18, 30, 0.96)');
-    ctx.fillStyle = 'rgba(57,255,20,0.08)';
-    ctx.fillRect(120, 332, 176, 10);
-    ctx.fillStyle = 'rgba(255,79,216,0.12)';
-    ctx.fillRect(132, 338, 152, 6);
-
+    // ---- Title bar (clean cyberpunk monospace, sparse glow) ----
     ctx.save();
-    ctx.translate(208, 286);
-    ctx.scale(1.7, 1.7);
-    drawPixelPunk(-14, -18, 1, 1, false);
+    // Tag line
+    ctx.fillStyle = 'rgba(0, 240, 255, 0.85)';
+    ctx.font = 'bold 10px Consolas, "Courier New", monospace';
+    ctx.fillText('// ВОЗЬМИ ПИВКО И ИГРАЙ В', 70, 84);
+
+    // Main title - white "ЧИКИ" / magenta "БРИКИ", thin cyan glow only
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = '#e8f8ff';
+    ctx.font = 'bold 38px Consolas, "Courier New", monospace';
+    ctx.fillText('ЧИКИ', 70, 130);
+    ctx.shadowColor = '#ff2bd8';
+    ctx.fillStyle = '#ff2bd8';
+    ctx.fillText('БРИКИ', 70, 168);
+    ctx.shadowBlur = 0;
+
+    // Thin underline accent (single cyan rule under the title)
+    ctx.fillStyle = 'rgba(0, 240, 255, 0.7)';
+    ctx.fillRect(70, 178, 180, 1);
+    ctx.fillStyle = 'rgba(255, 43, 216, 0.7)';
+    ctx.fillRect(252, 178, 30, 1);
+
+    ctx.fillStyle = 'rgba(180, 220, 255, 0.7)';
+    ctx.font = 'bold 10px Consolas, "Courier New", monospace';
+    ctx.fillText('> ВЫБЕРИ ПЕРСОНАЖА И ВПЕРЁД', 70, 192);
     ctx.restore();
 
-    drawPanel(88, 364, 240, 18, 'rgba(255,255,255,0.08)', 'rgba(22, 18, 30, 0.92)');
-    ctx.fillStyle = UI.accent;
-    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-    const aliasLine = selectedAlias().toUpperCase();
-    ctx.fillText(aliasLine, 208 - ctx.measureText(aliasLine).width / 2, 376);
+    // ---- Big preview of the currently highlighted person ----
+    // Borderless preview - just a soft pulsing cyan halo behind the character
+    // and a minimal name caption underneath. No outer frame or brackets.
+    const previewX = 58;
+    const previewY = 210;
+    const previewW = 200;
+    const previewH = 220;
 
-    ctx.fillStyle = UI.primary;
-    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-    ctx.fillText('CHARACTER CREATOR', 398, 92);
+    // Idle-dance: after 30 s of inactivity the previewed character starts
+    // pritantsovyvat'. Each personRoster slot gets its own DANCE_STYLES motif.
+    const idleMs = Date.now() - startScreenLastInputMs;
+    const dancing = idleMs > START_SCREEN_DANCE_DELAY_MS;
+    // Fade-in over the first second so the dance doesn't snap on.
+    const danceFade = dancing
+      ? Math.min(1, (idleMs - START_SCREEN_DANCE_DELAY_MS) / 1000)
+      : 0;
+    const danceStyle = DANCE_STYLES[selectedPersonIndex % DANCE_STYLES.length];
+    const dancePhase = (idleMs / 1000) * danceStyle.freq;
+    const danceBob  = dancing ? Math.sin(dancePhase)                    * danceStyle.bobAmp  * danceFade : 0;
+    const danceSway = dancing ? Math.sin(dancePhase + danceStyle.phase) * danceStyle.swayAmp * danceFade : 0;
+    const danceRot  = dancing ? Math.sin(dancePhase)                    * danceStyle.rotAmp  * danceFade : 0;
 
-    const creatorFields = [
-      { label: 'PRESET', value: selectedAlias().toUpperCase(), color: UI.text },
-      { label: 'HAIR', value: creatorOptions.hairColors[characterProfile.hairIndex].name.toUpperCase(), color: selectedHairColor() },
-      { label: 'SHIRT', value: creatorOptions.shirtColors[characterProfile.shirtIndex].name.toUpperCase(), color: selectedShirtColor() },
-      { label: 'PRINT', value: creatorOptions.shirtPatterns[characterProfile.patternIndex].name.toUpperCase(), color: UI.text },
-      { label: 'SKIN', value: creatorOptions.skinTones[characterProfile.skinIndex].name.toUpperCase(), color: selectedSkinTone() },
-      { label: 'PANTS', value: creatorOptions.pantsColors[characterProfile.pantsIndex].name.toUpperCase(), color: selectedPantsColor() },
-    ];
+    // Soft pulsing cyan glow behind the character (gentle ~12% breathing,
+    // pulses faster while dancing for extra life).
+    const glowSpeed = dancing ? 360 : 700;
+    const glowAmp   = dancing ? 0.20 : 0.12;
+    const glowPulse = (1 - glowAmp) + glowAmp * Math.sin(Date.now() / glowSpeed);
+    const glowCx = previewX + previewW / 2 + danceSway * 0.4;
+    const glowCy = previewY + previewH / 2 - 14 + danceBob * 0.4;
+    const glowR  = 130;
+    const portraitGlow = ctx.createRadialGradient(glowCx, glowCy, 4, glowCx, glowCy, glowR);
+    portraitGlow.addColorStop(0,    'rgba(0, 240, 255, ' + (0.32 * glowPulse).toFixed(2) + ')');
+    portraitGlow.addColorStop(0.5,  'rgba(0, 240, 255, ' + (0.10 * glowPulse).toFixed(2) + ')');
+    portraitGlow.addColorStop(1,    'rgba(0, 240, 255, 0)');
+    ctx.fillStyle = portraitGlow;
+    ctx.fillRect(previewX - 20, previewY - 10, previewW + 40, previewH + 20);
 
-    creatorFields.forEach((field, index) => {
-      const y = 102 + index * 36;
-      const selected = creatorSelection === index;
-      addInteractiveRegion(396, y, 328, 30, () => {
-        creatorSelection = index;
-        switch (index) {
-          case 0:
-            applyPreset((characterProfile.presetIndex + 1) % presetPlayers.length);
-            break;
-          case 1:
-            characterProfile.hairIndex = (characterProfile.hairIndex + 1) % creatorOptions.hairColors.length;
-            break;
-          case 2:
-            characterProfile.shirtIndex = (characterProfile.shirtIndex + 1) % creatorOptions.shirtColors.length;
-            break;
-          case 3:
-            characterProfile.patternIndex = (characterProfile.patternIndex + 1) % creatorOptions.shirtPatterns.length;
-            break;
-          case 4:
-            characterProfile.skinIndex = (characterProfile.skinIndex + 1) % creatorOptions.skinTones.length;
-            break;
-          case 5:
-            characterProfile.pantsIndex = (characterProfile.pantsIndex + 1) % creatorOptions.pantsColors.length;
-            break;
-        }
-      }, () => {
-        creatorSelection = index;
-      });
-      drawPanel(396, y, 328, 30, selected ? UI.primary : 'rgba(255,255,255,0.08)', selected ? 'rgba(57,255,20,0.12)' : 'rgba(18,16,28,0.94)');
-      if (selected) {
-        ctx.fillStyle = 'rgba(57,255,20,0.1)';
-        ctx.fillRect(400, y + 3, 320, 24);
+    const previewImg = selectedPerson().img;
+    if (previewImg && previewImg.complete && previewImg.naturalWidth > 0) {
+      // Letterbox the portrait preserving aspect; leave room for the name caption.
+      const innerPad = 10;
+      const maxW = previewW - innerPad * 2;
+      const maxH = previewH - innerPad * 2 - 22;
+      const ratio = Math.min(maxW / previewImg.naturalWidth, maxH / previewImg.naturalHeight);
+      const dw = previewImg.naturalWidth * ratio;
+      const dh = previewImg.naturalHeight * ratio;
+      const dx = previewX + (previewW - dw) / 2;
+      const dy = previewY + innerPad + (maxH - dh) / 2;
+      if (dancing) {
+        // Translate around the portrait center so rotation pivots on the body.
+        ctx.save();
+        ctx.translate(dx + dw / 2 + danceSway, dy + dh / 2 + danceBob);
+        ctx.rotate(danceRot);
+        ctx.drawImage(previewImg, -dw / 2, -dh / 2, dw, dh);
+        ctx.restore();
+      } else {
+        ctx.drawImage(previewImg, dx, dy, dw, dh);
       }
-      const rowCenterY = y + 15;
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = UI.textDim;
+    } else {
+      ctx.fillStyle = 'rgba(180, 220, 255, 0.5)';
       ctx.font = 'bold 10px Consolas, "Courier New", monospace';
-      ctx.fillText(field.label, 412, rowCenterY);
-      ctx.fillStyle = field.color;
-      ctx.font = 'bold 12px Consolas, "Courier New", monospace';
-      ctx.fillText(field.value, 560 - ctx.measureText(field.value).width / 2, rowCenterY);
-      ctx.fillStyle = UI.textDim;
-      ctx.font = 'bold 10px Consolas, "Courier New", monospace';
-      const arrows = '<   >';
-      ctx.fillText(arrows, 710 - ctx.measureText(arrows).width, rowCenterY);
-      ctx.textBaseline = 'alphabetic';
+      const loading = 'ЗАГРУЗКА...';
+      ctx.fillText(loading, previewX + previewW / 2 - ctx.measureText(loading).width / 2, previewY + previewH / 2);
+    }
+
+    // Minimal name caption: thin cyan rule + centered name (no plate behind).
+    ctx.fillStyle = 'rgba(0, 240, 255, 0.5)';
+    ctx.fillRect(previewX + 40, previewY + previewH - 22, previewW - 80, 1);
+    ctx.fillStyle = '#e8f8ff';
+    ctx.font = 'bold 13px Consolas, "Courier New", monospace';
+    const aliasLine = selectedPerson().name;
+    ctx.fillText(aliasLine, previewX + previewW / 2 - ctx.measureText(aliasLine).width / 2, previewY + previewH - 8);
+
+    // ---- Portrait grid (5 thumbnails) ----
+    ctx.fillStyle = 'rgba(0, 240, 255, 0.85)';
+    ctx.font = 'bold 10px Consolas, "Courier New", monospace';
+    ctx.fillText('// ВЫБОР ПАЦАНА', 290, 84);
+
+    const gridX = 290;
+    const gridY = 100;
+    const thumbW = 84;
+    const thumbH = 110;
+    const gap = 8;
+    personRoster.forEach((person, index) => {
+      const tx = gridX + index * (thumbW + gap);
+      const ty = gridY;
+      const isPicked = selectedPersonIndex === index;
+      const isFocused = creatorSelection === 0;
+      addInteractiveRegion(tx, ty, thumbW, thumbH, () => {
+        creatorSelection = 0;
+        selectedPersonIndex = index;
+        startScreenLastInputMs = Date.now();
+      }, () => {
+        creatorSelection = 0;
+      });
+      // Flat dark fill - clean cyberpunk look.
+      ctx.fillStyle = isPicked ? 'rgba(0, 240, 255, 0.10)' : 'rgba(8, 10, 18, 0.85)';
+      ctx.fillRect(tx, ty, thumbW, thumbH);
+      // Border: cyan when picked & focused, magenta when picked but row defocused,
+      // dim cyan otherwise.
+      ctx.strokeStyle = isPicked
+        ? (isFocused ? '#00f0ff' : '#ff2bd8')
+        : 'rgba(0, 240, 255, 0.22)';
+      ctx.lineWidth = isPicked ? 1.5 : 1;
+      ctx.strokeRect(tx + 0.5, ty + 0.5, thumbW - 1, thumbH - 1);
+      // Tiny corner ticks on the picked thumb.
+      if (isPicked) {
+        ctx.strokeStyle = isFocused ? '#ff2bd8' : '#00f0ff';
+        ctx.lineWidth = 1;
+        const tk = 6;
+        ctx.beginPath();
+        ctx.moveTo(tx + 2, ty + 2 + tk); ctx.lineTo(tx + 2, ty + 2); ctx.lineTo(tx + 2 + tk, ty + 2);
+        ctx.moveTo(tx + thumbW - 2 - tk, ty + thumbH - 2); ctx.lineTo(tx + thumbW - 2, ty + thumbH - 2); ctx.lineTo(tx + thumbW - 2, ty + thumbH - 2 - tk);
+        ctx.stroke();
+      }
+      const img = person.img;
+      if (img && img.complete && img.naturalWidth > 0) {
+        const pad = 6;
+        const maxW = thumbW - pad * 2;
+        const maxH = thumbH - pad * 2 - 14;
+        const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
+        const dw = img.naturalWidth * ratio;
+        const dh = img.naturalHeight * ratio;
+        const dx = tx + (thumbW - dw) / 2;
+        const dy = ty + pad + (maxH - dh) / 2;
+        ctx.drawImage(img, dx, dy, dw, dh);
+      }
+      ctx.fillStyle = isPicked ? '#e8f8ff' : 'rgba(180, 220, 255, 0.55)';
+      ctx.font = 'bold 9px Consolas, "Courier New", monospace';
+      const nameW = ctx.measureText(person.name).width;
+      ctx.fillText(person.name, tx + thumbW / 2 - nameW / 2, ty + thumbH - 6);
     });
 
-    const settingsSelected = creatorSelection === 6;
-    addInteractiveRegion(396, 354, 156, 34, () => {
-      creatorSelection = 6;
+    ctx.fillStyle = 'rgba(180, 220, 255, 0.55)';
+    ctx.font = 'bold 9px Consolas, "Courier New", monospace';
+    ctx.fillText('← / → — ПРОСМОТР   //   ENTER / A — ВЫБОР', 290, 230);
+
+    // ---- Action buttons (SETTINGS / PLAY) - flat cyberpunk panels ----
+    const drawCyberButton = (bx, by, bw, bh, label, selected, accentMagenta) => {
+      const accent = accentMagenta ? '#ff2bd8' : '#00f0ff';
+      const accentDim = accentMagenta ? 'rgba(255, 43, 216, 0.35)' : 'rgba(0, 240, 255, 0.35)';
+      // Fill
+      ctx.fillStyle = selected
+        ? (accentMagenta ? 'rgba(255, 43, 216, 0.18)' : 'rgba(0, 240, 255, 0.14)')
+        : 'rgba(8, 10, 18, 0.85)';
+      ctx.fillRect(bx, by, bw, bh);
+      // Border
+      ctx.strokeStyle = selected ? accent : accentDim;
+      ctx.lineWidth = selected ? 1.5 : 1;
+      ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+      // Side accent bar (left) for selected button
+      if (selected) {
+        ctx.fillStyle = accent;
+        ctx.fillRect(bx, by, 3, bh);
+      }
+      // Label
+      ctx.fillStyle = selected ? '#e8f8ff' : 'rgba(180, 220, 255, 0.7)';
+      ctx.font = 'bold 16px Consolas, "Courier New", monospace';
+      const tw = ctx.measureText(label).width;
+      ctx.fillText(label, bx + bw / 2 - tw / 2, by + bh / 2 + 6);
+    };
+
+    const settingsSelected = creatorSelection === 1;
+    addInteractiveRegion(290, 260, 200, 48, () => {
+      creatorSelection = 1;
       gameState = 'settings';
       settingsReturnTo = 'start';
       settingsSelection = 0;
       characterProfile.pendingResolutionIndex = characterProfile.resolutionIndex;
+      startScreenLastInputMs = Date.now();
     }, () => {
-      creatorSelection = 6;
+      creatorSelection = 1;
     });
-    drawPanel(396, 354, 156, 34, settingsSelected ? UI.accent : UI.border, settingsSelected ? 'rgba(255,204,0,0.18)' : 'rgba(18,16,28,0.94)');
-    ctx.fillStyle = settingsSelected ? UI.accent : UI.textDim;
-    ctx.font = 'bold 14px Consolas, "Courier New", monospace';
-    const settingsText = 'SETTINGS';
-    ctx.fillText(settingsText, 474 - ctx.measureText(settingsText).width / 2, 376);
+    drawCyberButton(290, 260, 200, 48, 'НАСТРОЙКИ', settingsSelected, false);
 
-    const playSelected = creatorSelection === 7;
-    addInteractiveRegion(568, 354, 156, 34, () => {
-      creatorSelection = 7;
+    const playSelected = creatorSelection === 2;
+    addInteractiveRegion(510, 260, 230, 48, () => {
+      creatorSelection = 2;
+      startScreenLastInputMs = Date.now();
       startGame();
     }, () => {
-      creatorSelection = 7;
+      creatorSelection = 2;
     });
-    drawPanel(568, 354, 156, 34, playSelected ? UI.secondary : UI.primary, playSelected ? 'rgba(255,79,216,0.18)' : 'rgba(57,255,20,0.14)');
-    ctx.fillStyle = playSelected ? UI.secondary : UI.primary;
-    ctx.font = 'bold 15px Consolas, "Courier New", monospace';
-    const playText = 'PLAY THE RIOT';
-    ctx.fillText(playText, 646 - ctx.measureText(playText).width / 2, 376);
+    drawCyberButton(510, 260, 230, 48, 'НАЧАТЬ БУНТ', playSelected, true);
 
-    ctx.fillStyle = UI.textDim;
-    ctx.font = 'bold 10px Consolas, "Courier New", monospace';
-    ctx.fillText('ARROWS / STICK NAVIGATE', 396, 416);
-    ctx.fillText('E / ENTER / A SELECT', 396, 430);
-    ctx.fillText('SPACE / START PLAY', 564, 430);
+    ctx.fillStyle = 'rgba(180, 220, 255, 0.55)';
+    ctx.font = 'bold 9px Consolas, "Courier New", monospace';
+    ctx.fillText('> СТРЕЛКИ / СТИК — НАВИГАЦИЯ', 290, 340);
+    ctx.fillText('> E / ENTER / A — ВЫБОР', 290, 354);
+    ctx.fillText('> SPACE / START — ИГРАТЬ', 290, 368);
 
     if (ownedGuitars.length > 0) {
-      drawPanel(58, 444, 684, 14, 'rgba(255, 204, 0, 0.18)', 'rgba(18, 16, 26, 0.9)');
-      ctx.fillStyle = UI.accent;
+      ctx.fillStyle = 'rgba(8, 10, 18, 0.85)';
+      ctx.fillRect(58, 444, 684, 14);
+      ctx.strokeStyle = 'rgba(0, 240, 255, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(58.5, 444.5, 683, 13);
+      ctx.fillStyle = 'rgba(0, 240, 255, 0.85)';
       ctx.font = 'bold 9px Consolas, "Courier New", monospace';
       const ownedNames = ownedGuitars.map(i => guitarTypes[i].name).join(', ');
-      const ownedLine = 'LOCKER: ' + ownedNames.toUpperCase();
+      const ownedLine = '// СКЛАД: ' + ownedNames.toUpperCase();
       ctx.fillText(ownedLine, 400 - ctx.measureText(ownedLine).width / 2, 454);
     }
+
+    // ---- Character-selection confirmation modal ----
+    // Drawn last so it sits on top of the rest of the start screen. While
+    // open, all interactive regions registered by the underlying screen
+    // are wiped so the dialog buttons own the mouse/click handling.
+    if (creatorConfirming) {
+      // Dim the screen behind the modal.
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.fillRect(0, 0, GAME_W, GAME_H);
+      // Wipe stale regions so portrait/button hovers can't fire under the modal.
+      clearInteractiveRegions();
+
+      const modalW = 420;
+      const modalH = 200;
+      const modalX = (GAME_W - modalW) / 2;
+      const modalY = (GAME_H - modalH) / 2;
+
+      // Flat cyberpunk modal frame.
+      ctx.fillStyle = 'rgba(8, 10, 18, 0.96)';
+      ctx.fillRect(modalX, modalY, modalW, modalH);
+      ctx.strokeStyle = '#00f0ff';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(modalX + 0.5, modalY + 0.5, modalW - 1, modalH - 1);
+      // Corner brackets on the modal (magenta accent)
+      const mb = 12;
+      ctx.strokeStyle = '#ff2bd8';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(modalX + 4, modalY + 4 + mb); ctx.lineTo(modalX + 4, modalY + 4); ctx.lineTo(modalX + 4 + mb, modalY + 4);
+      ctx.moveTo(modalX + modalW - 4 - mb, modalY + 4); ctx.lineTo(modalX + modalW - 4, modalY + 4); ctx.lineTo(modalX + modalW - 4, modalY + 4 + mb);
+      ctx.moveTo(modalX + 4, modalY + modalH - 4 - mb); ctx.lineTo(modalX + 4, modalY + modalH - 4); ctx.lineTo(modalX + 4 + mb, modalY + modalH - 4);
+      ctx.moveTo(modalX + modalW - 4 - mb, modalY + modalH - 4); ctx.lineTo(modalX + modalW - 4, modalY + modalH - 4); ctx.lineTo(modalX + modalW - 4, modalY + modalH - 4 - mb);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(0, 240, 255, 0.85)';
+      ctx.font = 'bold 11px Consolas, "Courier New", monospace';
+      const title = '// ПОДТВЕРДИ ВЫБОР';
+      ctx.fillText(title, GAME_W / 2 - ctx.measureText(title).width / 2, modalY + 36);
+
+      ctx.fillStyle = '#e8f8ff';
+      ctx.font = 'bold 22px Consolas, "Courier New", monospace';
+      const nameLine = 'ИГРАТЬ ЗА ' + selectedPerson().name + '?';
+      ctx.fillText(nameLine, GAME_W / 2 - ctx.measureText(nameLine).width / 2, modalY + 80);
+
+      // YES / NO buttons.
+      const btnW = 140;
+      const btnH = 42;
+      const gap  = 24;
+      const btnY = modalY + modalH - btnH - 28;
+      const yesX = GAME_W / 2 - btnW - gap / 2;
+      const noX  = GAME_W / 2 + gap / 2;
+
+      const yesSel = creatorConfirmSelection === 0;
+      const noSel  = creatorConfirmSelection === 1;
+
+      addInteractiveRegion(yesX, btnY, btnW, btnH, () => {
+        creatorConfirmSelection = 0;
+        creatorSelection = 2;
+        lastBottomRowSelection = 2;
+        creatorConfirming = false;
+      }, () => { creatorConfirmSelection = 0; });
+      addInteractiveRegion(noX, btnY, btnW, btnH, () => {
+        creatorConfirmSelection = 1;
+        creatorConfirming = false;
+      }, () => { creatorConfirmSelection = 1; });
+
+      drawCyberButton(yesX, btnY, btnW, btnH, 'ДА',  yesSel, false);
+      drawCyberButton(noX,  btnY, btnW, btnH, 'НЕТ', noSel,  true);
+
+      ctx.fillStyle = 'rgba(180, 220, 255, 0.55)';
+      ctx.font = 'bold 9px Consolas, "Courier New", monospace';
+      const hint = '← / →   //   E / ENTER / A — ПОДТВЕРДИТЬ   //   ESC / B — ОТМЕНА';
+      ctx.fillText(hint, GAME_W / 2 - ctx.measureText(hint).width / 2, modalY + modalH - 8);
+    }
+
     popUITransform();
     return;
   }
@@ -6233,12 +6851,12 @@ function draw() {
     drawRoundedRect(116, 68, 568, 340, 18, 'rgba(12, 10, 18, 0.94)', UI.border);
     ctx.fillStyle = UI.primary;
     ctx.font = 'bold 14px Consolas, "Courier New", monospace';
-    const settingsTitle = 'DISPLAY SETTINGS';
+    const settingsTitle = 'НАСТРОЙКИ ЭКРАНА';
     ctx.fillText(settingsTitle, 400 - ctx.measureText(settingsTitle).width / 2, 106);
 
     ctx.fillStyle = UI.textDim;
     ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-    const settingsSub = 'CHOOSE A RESOLUTION THAT FITS YOUR SCREEN';
+    const settingsSub = 'ВЫБЕРИ ПОДХОДЯЩЕЕ РАЗРЕШЕНИЕ';
     ctx.fillText(settingsSub, 400 - ctx.measureText(settingsSub).width / 2, 128);
 
     const resolutionSelected = settingsSelection === 0;
@@ -6251,7 +6869,7 @@ function draw() {
     drawPanel(170, 166, 460, 46, resolutionSelected ? UI.primary : 'rgba(255,255,255,0.08)', resolutionSelected ? 'rgba(57,255,20,0.12)' : 'rgba(18,16,28,0.94)');
     ctx.fillStyle = UI.textDim;
     ctx.font = 'bold 11px Consolas, "Courier New", monospace';
-    ctx.fillText('RESOLUTION', 190, 180);
+    ctx.fillText('РАЗРЕШЕНИЕ', 190, 180);
     ctx.fillStyle = UI.accent;
     ctx.font = 'bold 18px Consolas, "Courier New", monospace';
     const resolutionText = pendingResolution().name;
@@ -6272,7 +6890,7 @@ function draw() {
     drawPanel(170, 236, 460, 34, applySelected ? UI.primary : 'rgba(255,255,255,0.08)', applySelected ? 'rgba(57,255,20,0.14)' : 'rgba(18,16,28,0.94)');
     ctx.fillStyle = applySelected ? UI.primary : UI.textDim;
     ctx.font = 'bold 14px Consolas, "Courier New", monospace';
-    const applyText = 'APPLY RESOLUTION';
+    const applyText = 'ПРИМЕНИТЬ РАЗРЕШЕНИЕ';
     ctx.fillText(applyText, 400 - ctx.measureText(applyText).width / 2, 258);
 
     const backSelected = settingsSelection === 2;
@@ -6286,15 +6904,17 @@ function draw() {
     drawPanel(250, 288, 300, 34, backSelected ? UI.secondary : UI.border, backSelected ? 'rgba(255,79,216,0.18)' : 'rgba(18,16,28,0.94)');
     ctx.fillStyle = backSelected ? UI.secondary : UI.textDim;
     ctx.font = 'bold 14px Consolas, "Courier New", monospace';
-    const backText = settingsReturnTo === 'paused' ? 'BACK TO PAUSE' : 'BACK TO CREATOR';
+    const backText = settingsReturnTo === 'paused' ? 'НАЗАД В ПАУЗУ' : 'НАЗАД В МЕНЮ';
     ctx.fillText(backText, 400 - ctx.measureText(backText).width / 2, 310);
 
     ctx.fillStyle = UI.textDim;
     ctx.font = 'bold 10px Consolas, "Courier New", monospace';
-    const currentLine = 'CURRENT: ' + selectedResolution().name;
+    const currentLine = 'ТЕКУЩЕЕ: ' + selectedResolution().name;
     ctx.fillText(currentLine, 400 - ctx.measureText(currentLine).width / 2, 348);
-    ctx.fillText('LEFT / RIGHT CHANGE   //   E / ENTER / A SELECT', 400 - ctx.measureText('LEFT / RIGHT CHANGE   //   E / ENTER / A SELECT').width / 2, 366);
-    ctx.fillText('SPACE / ESC / START RETURN', 400 - ctx.measureText('SPACE / ESC / START RETURN').width / 2, 382);
+    const navHint = '← / → — СМЕНА   //   E / ENTER / A — ВЫБОР';
+    ctx.fillText(navHint, 400 - ctx.measureText(navHint).width / 2, 366);
+    const retHint = 'SPACE / ESC / START — НАЗАД';
+    ctx.fillText(retHint, 400 - ctx.measureText(retHint).width / 2, 382);
     popUITransform();
     return;
   }
@@ -6330,15 +6950,15 @@ function draw() {
 
     ctx.fillStyle = UI.danger;
     ctx.font = 'bold 48px Consolas, "Courier New", monospace';
-    const gameOverText = 'GAME OVER';
+    const gameOverText = 'КОНЕЦ ИГРЫ';
     ctx.fillText(gameOverText, centerX - ctx.measureText(gameOverText).width / 2, 180);
 
     ctx.fillStyle = UI.text;
     ctx.font = '22px Consolas, "Courier New", monospace';
-    const scoreText = 'Score: ' + score;
+    const scoreText = 'Очки: ' + score;
     ctx.fillText(scoreText, centerX - ctx.measureText(scoreText).width / 2, 232);
     ctx.fillStyle = UI.accent;
-    const beerText = 'Beer earned: ' + score;
+    const beerText = 'Пива собрано: ' + score;
     ctx.fillText(beerText, centerX - ctx.measureText(beerText).width / 2, 262);
 
     // Attempts indicator (only relevant on levels 2+, where respawns are allowed).
@@ -6346,15 +6966,15 @@ function draw() {
     ctx.font = 'bold 14px Consolas, "Courier New", monospace';
     if (bossActive) {
       ctx.fillStyle = UI.secondary;
-      const bossLine = 'BOSS FIGHT - UNLIMITED RETRIES';
+      const bossLine = 'БОЙ С БОССОМ — ПОПЫТОК БЕЗ ЛИМИТА';
       ctx.fillText(bossLine, centerX - ctx.measureText(bossLine).width / 2, 292);
     } else if (currentLevel > 1) {
       const attemptsUsed = levelDeathCount;
       const attemptsLeft = Math.max(0, MAX_DEATHS_PER_LEVEL - attemptsUsed);
       ctx.fillStyle = willRespawn ? UI.primary : UI.danger;
       const attemptsLine = willRespawn
-        ? `LEVEL ${currentLevel}  ATTEMPTS LEFT: ${attemptsLeft}/${MAX_DEATHS_PER_LEVEL}`
-        : `OUT OF ATTEMPTS - BACK TO LEVEL 1`;
+        ? `УРОВЕНЬ ${currentLevel}  ОСТАЛОСЬ ПОПЫТОК: ${attemptsLeft}/${MAX_DEATHS_PER_LEVEL}`
+        : `ПОПЫТКИ КОНЧИЛИСЬ — НАЗАД НА УРОВЕНЬ 1`;
       ctx.fillText(attemptsLine, centerX - ctx.measureText(attemptsLine).width / 2, 292);
     }
 
@@ -6364,10 +6984,10 @@ function draw() {
     ctx.fillStyle = UI.bg;
     ctx.font = 'bold 16px Consolas, "Courier New", monospace';
     const retryText = bossActive
-      ? 'RETRY BOSS FIGHT  (SPACE / A)'
+      ? 'ПОВТОР БОЯ С БОССОМ  (SPACE / A)'
       : (willRespawn
-        ? `RESPAWN ON LEVEL ${currentLevel}  (SPACE / A)`
-        : 'PRESS SPACE / A TO RETRY');
+        ? `ВОЗРОДИТЬСЯ НА УРОВНЕ ${currentLevel}  (SPACE / A)`
+        : 'ЖМИ SPACE / A — ПОВТОР');
     ctx.fillText(retryText, centerX - ctx.measureText(retryText).width / 2, 340);
     popUITransform();
     return;
@@ -6392,25 +7012,25 @@ function draw() {
     ctx.shadowBlur = 24;
     ctx.fillStyle = '#ffee66';
     ctx.font = 'bold 48px Consolas, "Courier New", monospace';
-    const title = 'VICTORY!';
+    const title = 'ПОБЕДА!';
     ctx.fillText(title, centerX - ctx.measureText(title).width / 2, 108);
     ctx.restore();
 
     ctx.fillStyle = '#ff2aa0';
     ctx.font = 'bold 16px Consolas, "Courier New", monospace';
-    const sub1 = 'THE MEGA-CORP TITAN LIES IN RUINS';
+    const sub1 = 'МЕГА-КОРП ТИТАН ПОВЕРЖЕН';
     ctx.fillText(sub1, centerX - ctx.measureText(sub1).width / 2, 142);
 
     ctx.fillStyle = '#d9d1f8';
     ctx.font = '14px Consolas, "Courier New", monospace';
-    const sub2 = 'The neon city breathes again.';
+    const sub2 = 'Неоновый город снова дышит.';
     ctx.fillText(sub2, centerX - ctx.measureText(sub2).width / 2, 166);
 
     // Stats panel
     drawPanel(150, 188, 500, 200, '#ff2aa0', 'rgba(26, 10, 38, 0.9)');
     ctx.fillStyle = '#ffcc00';
     ctx.font = 'bold 16px Consolas, "Courier New", monospace';
-    ctx.fillText('RUN STATS', 170, 214);
+    ctx.fillText('ИТОГИ ЗАБЕГА', 170, 214);
 
     // Format run time as MM:SS.
     const runMs = Math.max(0, (runEndMs || Date.now()) - runStartMs);
@@ -6421,12 +7041,12 @@ function draw() {
     // Two-column stat readout.
     ctx.font = '14px Consolas, "Courier New", monospace';
     const rows = [
-      ['Time:',           `${mm}:${ss}`,              '#ffffff'],
-      ['Enemies Killed:', String(enemiesKilled),      '#ffffff'],
-      ['Beer Collected:', String(beerCollected),      '#ffee66'],
-      ['Money Spent:',    `${moneySpent} beer`,       '#ff9ad6'],
-      ['Final Score:',    String(score),              '#ffffff'],
-      ['Beer Banked:',    String(totalBeer),          '#ffee66'],
+      ['Время:',          `${mm}:${ss}`,                   '#ffffff'],
+      ['Убито врагов:',  String(enemiesKilled),           '#ffffff'],
+      ['Собрано пива:',  String(beerCollected),           '#ffee66'],
+      ['Потрачено:',     `${moneySpent} пива`,        '#ff9ad6'],
+      ['Итого очков:',  String(score),                   '#ffffff'],
+      ['Пива в копилке:', String(totalBeer),               '#ffee66'],
     ];
     const labelX = 180;
     const valueX = 520;
@@ -6443,7 +7063,7 @@ function draw() {
     const blinkAlpha = 0.45 + 0.45 * Math.abs(Math.sin(Date.now() * 0.004));
     ctx.fillStyle = `rgba(57, 255, 20, ${blinkAlpha})`;
     ctx.font = 'bold 14px Consolas, "Courier New", monospace';
-    const hint = 'PRESS  SPACE / ENTER / A  TO RETURN TO MENU';
+    const hint = 'ЖМИ  SPACE / ENTER / A  — В МЕНЮ';
     ctx.fillText(hint, centerX - ctx.measureText(hint).width / 2, 416);
 
     popUITransform();
@@ -6602,7 +7222,7 @@ function drawPerformanceBanner() {
   ctx.shadowBlur = 14 * pulse;
   ctx.fillStyle = '#ffee66';
   ctx.font = 'bold 22px Consolas, "Courier New", monospace';
-  const label = '* FINAL SOLO *';
+  const label = '* ФИНАЛЬНОЕ СОЛО *';
   ctx.fillText(label, (UI_W - ctx.measureText(label).width) / 2, bannerY + 28);
   ctx.restore();
 }
@@ -6620,15 +7240,15 @@ function drawPauseOverlay() {
 
   ctx.fillStyle = UI.primary;
   ctx.font = 'bold 28px Consolas, "Courier New", monospace';
-  const title = 'PAUSED';
+  const title = 'ПАУЗА';
   ctx.fillText(title, (GAME_W - ctx.measureText(title).width) / 2, panelY + 54);
 
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 10px Consolas, "Courier New", monospace';
-  const sub = 'ESC / START  TO RESUME';
+  const sub = 'ESC / START — ПРОДОЛЖИТЬ';
   ctx.fillText(sub, (GAME_W - ctx.measureText(sub).width) / 2, panelY + 74);
 
-  const labels = ['RESUME', 'SETTINGS', 'EXIT TO MENU'];
+  const labels = ['ПРОДОЛЖИТЬ', 'НАСТРОЙКИ', 'ВЫЙТИ В МЕНЮ'];
   const itemW = 280;
   const itemH = 38;
   const itemX = (GAME_W - itemW) / 2;
@@ -6660,7 +7280,7 @@ function drawPauseOverlay() {
         lastCompletedLevel = 0;
         currentLevel = 1;
         gameState = 'start';
-        creatorSelection = 7;
+        creatorSelection = 2;
       }
     }, () => {
       pauseSelection = i;
@@ -6674,7 +7294,7 @@ function drawPauseOverlay() {
 
   ctx.fillStyle = UI.textDim;
   ctx.font = 'bold 9px Consolas, "Courier New", monospace';
-  const hint = 'UP / DOWN NAVIGATE   //   E / ENTER / A SELECT';
+  const hint = '↑ / ↓ НАВИГАЦИЯ   //   E / ENTER / A — ВЫБОР';
   ctx.fillText(hint, (GAME_W - ctx.measureText(hint).width) / 2, panelY + panelH - 18);
 }
 
